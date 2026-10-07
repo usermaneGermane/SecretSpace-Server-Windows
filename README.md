@@ -326,6 +326,14 @@ It checks each prerequisite, offers pip and winget for what is missing, and
 writes `PassMan-Server-Installer.exe` here. The version comes from
 `server/version.py`.
 
+## Versions
+
+The Windows server has its own version, in `server/version.py`, and each
+release is tagged `v<version>`. It started at 1.0.0 when the repositories
+were split; an installed server from before then says 2.2.0 under Settings →
+Apps, and the 1.0.0 installer upgrades it just the same. The version is
+separate from the app's and from the Linux server's.
+
 ## Project layout
 
 ```
