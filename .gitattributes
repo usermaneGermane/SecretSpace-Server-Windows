@@ -1,0 +1,15 @@
+# Batch scripts must keep CRLF endings; LF-only .bat files can break
+# label/goto handling on Windows.
+*.bat text eol=crlf
+
+# Everything else is normal text with LF in the repository.
+*.py  text eol=lf
+*.txt text eol=lf
+*.md  text eol=lf
+*.spec text eol=lf
+
+# Binary assets: never touch these.
+*.exe  binary
+*.png  binary
+*.ico  binary
+*.webp binary

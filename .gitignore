@@ -1,0 +1,25 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# PyInstaller scratch files
+build/
+dist/
+
+# A server run from source keeps its token and the vaults here (README.md,
+# "Running it from source"). The vaults are encrypted, but never commit them.
+server/store/
+server/token
+*.vault.enc
+
+# What builder\build.py writes here. Publish it as a release asset rather
+# than committing it.
+PassMan-Server-Installer.exe
+
+# Working notes, kept locally.
+TODO.txt
