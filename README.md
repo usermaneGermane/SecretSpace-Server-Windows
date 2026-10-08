@@ -109,7 +109,7 @@ That is `PassMan-Server-Setup.exe`'s job. Double-click it (it asks for
 administrator rights) and it shows where the server listens now, then:
 
 ```
-  1) Change network or port
+  1) Change network, port or allowed addresses
   2) Replace the token
   3) Show the token
   4) Close
@@ -129,6 +129,13 @@ For a script, skip the questions: `… setup --host 0.0.0.0 --port 9443`.
 **A new network or port** replaces the firewall rule and restarts the server
 by itself. What is left is the new address in Settings → Sync on every PC,
 in every synced vault.
+
+**A PC on another network** — behind a router, or on a VPN this PC is not
+part of — is outside the firewall rule, which covers the networks this PC
+is on. The setup's third question asks for such addresses (`172.17.17.2`,
+or a network such as `10.20.0.0/24`; comma-separated, `-` for none), or from
+an administrator terminal: `… setup --keep --allow-from 172.17.17.2`. They
+join the same rule, and an upgrade keeps them.
 
 **If the token leaks**, choose **Replace the token**. It asks for
 confirmation, writes a new random token, restarts the server and prints the
