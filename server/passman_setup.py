@@ -12,7 +12,9 @@ Windows (PassMan-Server-Installer.exe runs the first one for you):
 
 `setup` asks which address to listen on (listing this machine's networks)
 and which port, writes them to sync.env, creates the token if there is none
-yet, and opens the port in the firewall for the networks it serves:
+yet, and opens the port in the firewall for the networks it serves -- plus
+any other addresses you name, such as a PC on a network this machine is not
+on (`--allow-from 172.17.17.2`):
 
 - Linux: sync.env is /etc/passman/sync.env, which the systemd unit loads.
   The firewall rule is added when ufw is on; ufw is never switched on from
@@ -56,6 +58,12 @@ MIN_PORT = 1024
 
 ALL_NETWORKS = "0.0.0.0"
 LOCALHOST = "127.0.0.1"
+
+#: sync.env key for the extra addresses let through the firewall. Only the
+#: setup reads it; the server ignores it.
+ALLOW_KEY = "PASSMAN_ALLOW_FROM"
+#: What clears the list, typed at the question or given to --allow-from.
+NONE_WORDS = ("-", "none")
 
 
 def default_platform():
@@ -163,11 +171,45 @@ def read_env(path):
     return values
 
 
-def render_env(host, port):
-    return ("# PassMan sync server -- written by passman_setup.py.\n"
+def render_env(host, port, allow=()):
+    text = ("# PassMan sync server -- written by passman_setup.py.\n"
             "# Change it by running the setup again.\n"
             f"PASSMAN_HOST={host}\n"
             f"PASSMAN_PORT={port}\n")
+    if allow:
+        text += (f"# Also let through the firewall (the server ignores "
+                 f"this).\n{ALLOW_KEY}={','.join(allow)}\n")
+    return text
+
+
+def check_allow(text):
+    """
+    Extra addresses to let in, from "172.17.17.2, 10.20.0.0/24": a list of
+    addresses and networks, or a message. One address stays one address
+    (no /32), so it matches a rule typed by hand. Everyone (/0) is refused:
+    that is what the firewall is there to stop.
+    """
+    text = (text or "").strip()
+    if text.lower() in NONE_WORDS or not text:
+        return [], None
+    found = []
+    for part in text.replace(" ", ",").split(","):
+        if not part:
+            continue
+        try:
+            if "/" in part:
+                net = ipaddress.IPv4Network(part, strict=False)
+                item = str(net.network_address if net.prefixlen == 32
+                           else net)
+            else:
+                item = str(ipaddress.IPv4Address(part))
+        except ValueError:
+            return None, f"{part!r} is not an IPv4 address or network."
+        if item.endswith("/0"):
+            return None, f"{part} would let everyone in; name the networks."
+        if item not in found:
+            found.append(item)
+    return found, None
 
 
 def check_port(text):
@@ -240,6 +282,22 @@ def choose_port(ask, say, current):
         say(problem)
 
 
+def choose_allow(ask, say, current):
+    """Extra addresses; Enter keeps the current ones, - clears them."""
+    say("Let in any other addresses? For a PC on a network this machine is "
+        "not on, e.g. 172.17.17.2 or 10.20.0.0/24; comma-separated, - for "
+        "none.")
+    shown = ",".join(current) or "none"
+    while True:
+        answer = ask(f"Also let in [{shown}]: ").strip()
+        if not answer:
+            return list(current)
+        allow, problem = check_allow(answer)
+        if allow is not None:
+            return allow
+        say(problem)
+
+
 def _own_file(path):
     """Give the file to the service user, where there is one (Linux)."""
     try:
@@ -308,7 +366,12 @@ def ufw_rule(network, port):
 
 
 def firewall_linux(run, say, new_networks, port, old_networks, old_port):
-    """Allow the served networks through ufw -- but only if ufw is on."""
+    """
+    Allow the served networks and the extra addresses through ufw -- but
+    only if ufw is on. Rules the setup made for the old values go; rules
+    made by hand are left alone, unless they are for an address that the
+    setup was once given as an extra.
+    """
     if not ufw_active(run):
         if new_networks:
             say("ufw is not active, so no firewall rule was added. To limit "
@@ -382,12 +445,12 @@ def restart_task(run):
     return ok(result)
 
 
-def firewall_windows(run, host, port, addresses):
+def firewall_windows(run, host, port, addresses, allow=()):
     """
     Replace PassMan's inbound rule and say what it allows. Every network
     means LocalSubnet -- the networks this PC is on, whichever they are
-    today -- and one network means just that range. This machine only needs
-    no rule at all.
+    today -- and one network means just that range; the extra addresses
+    are added to either. This machine only needs no rule at all.
     """
     remove = (f"Remove-NetFirewallRule -Group {ps_quote(FIREWALL_GROUP)} "
               "-ErrorAction SilentlyContinue")
@@ -398,12 +461,15 @@ def firewall_windows(run, host, port, addresses):
         remote, label = "LocalSubnet", "the networks this PC is on"
     else:
         remote = label = str(networks_for(host, addresses)[0][1])
+    remotes = [remote, *allow]
+    if allow:
+        label += " and " + ", ".join(allow)
     result = run(powershell(
         f"{remove}; New-NetFirewallRule -DisplayName "
         f"{ps_quote(f'{TASK_NAME} (TCP {port})')} "
         f"-Group {ps_quote(FIREWALL_GROUP)} -Direction Inbound -Action Allow "
         f"-Protocol TCP -LocalPort {int(port)} -RemoteAddress "
-        f"{ps_quote(remote)} -Profile Any | Out-Null"))
+        f"{','.join(ps_quote(r) for r in remotes)} -Profile Any | Out-Null"))
     if ok(result):
         return f"Firewall: allowed {label} to TCP port {port}."
     return (f"Firewall: could not add the rule: "
@@ -421,18 +487,22 @@ def windows_folders(run, config_dir):
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
-def next_steps(host, port, addresses):
+def next_steps(host, port, addresses, allow=()):
     """What to type on the PCs."""
     lines = []
     targets = networks_for(host, addresses)
     if host == LOCALHOST:
         lines.append("Listening on this machine only: no PC can connect.")
-    elif host == ALL_NETWORKS and not targets:
+        return lines
+    if host == ALL_NETWORKS and not targets:
         lines.append(f"PCs: enter http://<this machine's address>:{port} in "
                      f"Settings -> Sync.")
     for address, network in targets:
         lines.append(f"PCs on {network}: enter http://{address}:{port} in "
                      f"Settings -> Sync.")
+    if allow:
+        lines.append(f"Also let in: {', '.join(allow)} -- they use whichever "
+                     f"of the addresses above reaches this machine.")
     return lines
 
 
@@ -460,6 +530,19 @@ def cmd_setup(args, ask=input, say=print, run=_run):
         port = choose_port(ask, say,
                            current.get("PASSMAN_PORT", str(DEFAULT_PORT)))
 
+    # The extra addresses: --allow-from sets them; with the other questions
+    # answered by flags they stay as saved; otherwise they are asked too.
+    old_allow, _ = check_allow(current.get(ALLOW_KEY))
+    old_allow = old_allow or []
+    if args.allow_from is not None:
+        allow, problem = check_allow(",".join(args.allow_from))
+        if problem:
+            sys.exit(problem)
+    elif keep or args.host or args.port or host == LOCALHOST:
+        allow = old_allow
+    else:
+        allow = choose_allow(ask, say, old_allow)
+
     changed = (current.get("PASSMAN_HOST"), current.get("PASSMAN_PORT")) \
         != (host, str(port))
     if changed and port_in_use(host if host != ALL_NETWORKS else "", port):
@@ -467,7 +550,7 @@ def cmd_setup(args, ask=input, say=print, run=_run):
             f"not this server, pick another port.")
 
     os.makedirs(args.config_dir, exist_ok=True)
-    write_atomic(env_path, render_env(host, port).encode())
+    write_atomic(env_path, render_env(host, port, allow).encode())
     if not windows:
         os.chmod(env_path, 0o644)
     say(f"Wrote {env_path}: listening on {host}:{port}.")
@@ -482,7 +565,7 @@ def cmd_setup(args, ask=input, say=print, run=_run):
 
     if windows:
         windows_folders(run, args.config_dir)
-        say(firewall_windows(run, host, port, addresses))
+        say(firewall_windows(run, host, port, addresses, allow))
         program, prefix = server_command()
         result = register_task(run, program, task_arguments(
             args.config_dir, host, port, prefix))
@@ -493,15 +576,19 @@ def cmd_setup(args, ask=input, say=print, run=_run):
             "starts." if restart_task(run) else
             f"Created the task, but it did not start. Open Task Scheduler, "
             f"find '{TASK_NAME}' and check its last result.")
-    elif changed:
+    else:
         old_host = current.get("PASSMAN_HOST")
         old_port = current.get("PASSMAN_PORT")
-        old_networks = [n for _, n in networks_for(old_host, addresses)] \
-            if old_host and old_port else []
-        firewall_linux(run, say, [n for _, n in networks_for(host, addresses)],
-                       port, old_networks, int(old_port or 0))
-        say(restart_service(run))
-    for line in next_steps(host, port, addresses):
+        old_sources = [*(n for _, n in networks_for(old_host, addresses)),
+                       *old_allow] if old_host and old_port else []
+        new_sources = [] if host == LOCALHOST else \
+            [*(n for _, n in networks_for(host, addresses)), *allow]
+        if changed or allow != old_allow:
+            firewall_linux(run, say, new_sources, port, old_sources,
+                           int(old_port or 0))
+        if changed:
+            say(restart_service(run))
+    for line in next_steps(host, port, addresses, allow):
         say(line)
 
 
@@ -552,7 +639,7 @@ def cmd_remove(args, ask=input, say=print, run=_run):
 
 
 #: What the menu offers, in order: (label, command).
-MENU = (("Change network or port", "setup"),
+MENU = (("Change network, port or allowed addresses", "setup"),
         ("Replace the token", "new-token"),
         ("Show the token", "show-token"))
 
@@ -644,6 +731,11 @@ def parse_args(argv):
     setup.add_argument("--keep", action="store_true",
                        help="reuse the saved address and port without "
                             "asking (an upgrade)")
+    setup.add_argument("--allow-from", action="append", metavar="ADDRESS",
+                       help="also let this address or network through the "
+                            "firewall, e.g. a PC on another network; "
+                            "repeat or comma-separate for more, 'none' "
+                            "clears them; skips the question")
     new = sub.add_parser("new-token", help="replace the token")
     new.add_argument("--yes", action="store_true",
                      help="do not ask for confirmation")
@@ -652,7 +744,7 @@ def parse_args(argv):
     sub.add_parser("menu", help="choose one of the above from a list")
     # No command means setup, with every question asked.
     parser.set_defaults(command="setup", host=None, port=None, keep=False,
-                        yes=False)
+                        allow_from=None, yes=False)
     args = parser.parse_args(argv)
     args.default_dir = args.config_dir is None
     if args.config_dir is None:

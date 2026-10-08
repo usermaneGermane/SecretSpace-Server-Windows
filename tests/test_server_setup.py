@@ -168,7 +168,7 @@ def test_without_ip_there_is_simply_nothing_to_list():
 
 
 def test_setup_writes_the_chosen_address_and_port(tmp_path):
-    out, _ = run_setup(tmp_path, answers=["2", "9443"])
+    out, _ = run_setup(tmp_path, answers=["2", "9443", ""])
     env = passman_setup.read_env(tmp_path / "sync.env")
     assert env == {"PASSMAN_HOST": "192.168.1.50", "PASSMAN_PORT": "9443"}
     assert "http://192.168.1.50:9443" in out
@@ -176,7 +176,7 @@ def test_setup_writes_the_chosen_address_and_port(tmp_path):
 
 
 def test_the_defaults_are_every_network_and_8787(tmp_path):
-    out, _ = run_setup(tmp_path, answers=["", ""])
+    out, _ = run_setup(tmp_path, answers=["", "", ""])
     env = passman_setup.read_env(tmp_path / "sync.env")
     assert env == {"PASSMAN_HOST": "0.0.0.0", "PASSMAN_PORT": "8787"}
     # Every network: one address and one firewall rule per network.
@@ -192,20 +192,20 @@ def test_what_setup_writes_is_what_the_server_reads(tmp_path):
 
 def test_running_setup_again_offers_the_current_values(tmp_path):
     run_setup(tmp_path, argv=["setup", "--host", "10.8.0.1", "--port", "9000"])
-    run_setup(tmp_path, answers=["", ""])
+    run_setup(tmp_path, answers=["", "", ""])
     assert passman_setup.read_env(tmp_path / "sync.env") == \
         {"PASSMAN_HOST": "10.8.0.1", "PASSMAN_PORT": "9000"}
 
 
 @pytest.mark.parametrize("bad", ["80", "70000", "web"])
 def test_a_bad_port_is_asked_again(tmp_path, bad):
-    out, _ = run_setup(tmp_path, answers=["1", bad, "9000"])
+    out, _ = run_setup(tmp_path, answers=["1", bad, "9000", ""])
     assert passman_setup.read_env(tmp_path / "sync.env")["PASSMAN_PORT"] == \
         "9000"
 
 
 def test_an_address_this_machine_does_not_have_is_refused(tmp_path):
-    out, _ = run_setup(tmp_path, answers=["192.168.7.7", "3", ""])
+    out, _ = run_setup(tmp_path, answers=["192.168.7.7", "3", "", ""])
     assert "does not have 192.168.7.7" in out
     assert passman_setup.read_env(tmp_path / "sync.env")["PASSMAN_HOST"] == \
         "10.8.0.1"
@@ -219,29 +219,29 @@ def test_a_bad_flag_stops_without_writing(tmp_path):
 
 
 def test_the_first_setup_creates_a_token_and_a_later_one_keeps_it(tmp_path):
-    run_setup(tmp_path, answers=["", ""])
+    run_setup(tmp_path, answers=["", "", ""])
     token = (tmp_path / "token").read_text().strip()
     assert len(token) >= 32
-    run_setup(tmp_path, answers=["", "9000"])
+    run_setup(tmp_path, answers=["", "9000", ""])
     assert (tmp_path / "token").read_text().strip() == token
 
 
 def test_a_change_restarts_a_running_service(tmp_path):
-    run_setup(tmp_path, answers=["", ""])
-    _, system = run_setup(tmp_path, answers=["", "9000"],
+    run_setup(tmp_path, answers=["", "", ""])
+    _, system = run_setup(tmp_path, answers=["", "9000", ""],
                           system=FakeSystem(active=True))
     assert system.restarted
 
 
 def test_no_change_means_no_restart(tmp_path):
-    run_setup(tmp_path, answers=["", ""])
-    _, system = run_setup(tmp_path, answers=["", ""],
+    run_setup(tmp_path, answers=["", "", ""])
+    _, system = run_setup(tmp_path, answers=["", "", ""],
                           system=FakeSystem(active=True))
     assert not system.restarted
 
 
 def test_a_stopped_service_is_not_started(tmp_path):
-    _, system = run_setup(tmp_path, answers=["", "9000"],
+    _, system = run_setup(tmp_path, answers=["", "9000", ""],
                           system=FakeSystem(active=False))
     assert not system.restarted
 
@@ -249,7 +249,7 @@ def test_a_stopped_service_is_not_started(tmp_path):
 # --- new-token -------------------------------------------------------------
 
 def test_new_token_replaces_the_token_restarts_and_prints_it(tmp_path):
-    run_setup(tmp_path, answers=["", ""])
+    run_setup(tmp_path, answers=["", "", ""])
     old = (tmp_path / "token").read_text().strip()
     out, system = run_setup(tmp_path, answers=["y"], argv=["new-token"],
                             system=FakeSystem(active=True))
@@ -260,7 +260,7 @@ def test_new_token_replaces_the_token_restarts_and_prints_it(tmp_path):
 
 
 def test_new_token_asks_first_and_no_keeps_the_old_one(tmp_path):
-    run_setup(tmp_path, answers=["", ""])
+    run_setup(tmp_path, answers=["", "", ""])
     old = (tmp_path / "token").read_text()
     out, system = run_setup(tmp_path, answers=[""], argv=["new-token"],
                             system=FakeSystem(active=True))
@@ -301,7 +301,7 @@ def test_keep_reuses_the_saved_values_without_asking(tmp_path):
 
 
 def test_keep_with_nothing_saved_asks(tmp_path):
-    run_setup(tmp_path, answers=["", ""], argv=["setup", "--keep"])
+    run_setup(tmp_path, answers=["", "", ""], argv=["setup", "--keep"])
     assert passman_setup.read_env(tmp_path / "sync.env")["PASSMAN_PORT"] == \
         "8787"
 
@@ -322,7 +322,7 @@ def test_pause_shows_an_error_before_waiting(tmp_path):
 # --- Linux firewall --------------------------------------------------------
 
 def test_with_ufw_on_setup_adds_the_rule_itself(tmp_path):
-    out, system = run_setup(tmp_path, answers=["2", "9443"],
+    out, system = run_setup(tmp_path, answers=["2", "9443", ""],
                             system=FakeSystem(ufw=True))
     assert system.ran("ufw allow from 192.168.1.0/24 to any port 9443 "
                       "proto tcp")
@@ -330,31 +330,165 @@ def test_with_ufw_on_setup_adds_the_rule_itself(tmp_path):
 
 
 def test_every_network_gets_one_rule_each(tmp_path):
-    _, system = run_setup(tmp_path, answers=["", ""],
+    _, system = run_setup(tmp_path, answers=["", "", ""],
                           system=FakeSystem(ufw=True))
     assert len(system.ran("ufw allow from")) == 2
 
 
 def test_a_new_port_replaces_the_old_rule(tmp_path):
-    run_setup(tmp_path, answers=["2", ""], system=FakeSystem(ufw=True))
-    _, system = run_setup(tmp_path, answers=["", "9443"],
+    run_setup(tmp_path, answers=["2", "", ""], system=FakeSystem(ufw=True))
+    _, system = run_setup(tmp_path, answers=["", "9443", ""],
                           system=FakeSystem(ufw=True))
     assert system.ran("ufw delete allow from 192.168.1.0/24 to any port 8787")
     assert system.ran("ufw allow from 192.168.1.0/24 to any port 9443")
 
 
 def test_with_ufw_off_nothing_is_switched_on(tmp_path):
-    out, system = run_setup(tmp_path, answers=["", ""],
+    out, system = run_setup(tmp_path, answers=["", "", ""],
                             system=FakeSystem(ufw=False))
     assert not system.ran("ufw allow") and not system.ran("ufw enable")
     assert "sudo ufw allow from 192.168.1.0/24" in out
 
 
 def test_no_change_touches_no_firewall_rule(tmp_path):
-    run_setup(tmp_path, answers=["", ""], system=FakeSystem(ufw=True))
-    _, system = run_setup(tmp_path, answers=["", ""],
+    run_setup(tmp_path, answers=["", "", ""], system=FakeSystem(ufw=True))
+    _, system = run_setup(tmp_path, answers=["", "", ""],
                           system=FakeSystem(ufw=True))
     assert not system.ran("ufw allow") and not system.ran("ufw delete")
+
+
+# --- extra addresses (--allow-from) -----------------------------------------
+
+def allowed(tmp_path):
+    return passman_setup.read_env(tmp_path / "sync.env").get(
+        passman_setup.ALLOW_KEY)
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("172.17.17.2", ["172.17.17.2"]),
+    (" 172.17.17.2 , 10.20.0.0/24 ", ["172.17.17.2", "10.20.0.0/24"]),
+    ("10.20.0.7/24", ["10.20.0.0/24"]),
+    ("172.17.17.2/32", ["172.17.17.2"]),     # matches a rule typed by hand
+    ("1.2.3.4,1.2.3.4", ["1.2.3.4"]),
+    ("-", []), ("none", []), ("", []),
+])
+def test_allow_from_accepts_addresses_and_networks(text, expected):
+    assert passman_setup.check_allow(text) == (expected, None)
+
+
+@pytest.mark.parametrize("bad", ["0.0.0.0/0", "everyone", "fe80::1",
+                                 "10.0.0.300", "1.2.3.4/33"])
+def test_allow_from_refuses_everyone_and_nonsense(bad):
+    allow, problem = passman_setup.check_allow(bad)
+    assert allow is None and problem
+
+
+def test_the_question_saves_extra_addresses(tmp_path):
+    out, _ = run_setup(tmp_path, answers=["", "", "172.17.17.2"])
+    assert allowed(tmp_path) == "172.17.17.2"
+    assert "Also let in: 172.17.17.2" in out
+    # Host and port are still what the server reads.
+    env = passman_setup.read_env(tmp_path / "sync.env")
+    assert listen(env) == ("0.0.0.0", 8787)
+
+
+def test_a_bad_extra_address_is_asked_again(tmp_path):
+    out, _ = run_setup(tmp_path, answers=["", "", "0.0.0.0/0", "10.20.0.0/24"])
+    assert "everyone" in out
+    assert allowed(tmp_path) == "10.20.0.0/24"
+
+
+def test_enter_keeps_the_extra_addresses_and_dash_clears_them(tmp_path):
+    run_setup(tmp_path, answers=["", "", "172.17.17.2"])
+    run_setup(tmp_path, answers=["", "", ""])
+    assert allowed(tmp_path) == "172.17.17.2"
+    run_setup(tmp_path, answers=["", "", "-"])
+    assert allowed(tmp_path) is None
+
+
+def test_with_ufw_on_the_extra_address_gets_its_rule(tmp_path):
+    out, system = run_setup(tmp_path, answers=["2", "9443", "172.17.17.2"],
+                            system=FakeSystem(ufw=True))
+    assert system.ran("ufw allow from 192.168.1.0/24 to any port 9443 "
+                      "proto tcp")
+    assert system.ran("ufw allow from 172.17.17.2 to any port 9443 proto tcp")
+
+
+def test_allow_from_alone_adds_the_rule_without_a_restart(tmp_path):
+    """The case it was made for: the service is set up and running, a PC on
+    another network needs in. Only the firewall changes."""
+    run_setup(tmp_path, argv=["setup", "--host", "0.0.0.0", "--port", "9443"])
+    out, system = run_setup(
+        tmp_path, argv=["setup", "--keep", "--allow-from", "172.17.17.2"],
+        system=FakeSystem(ufw=True, active=True))
+    assert system.ran("ufw allow from 172.17.17.2 to any port 9443 proto tcp")
+    assert not system.ran("ufw delete")
+    assert not system.restarted
+    assert allowed(tmp_path) == "172.17.17.2"
+
+
+def test_allow_from_repeats_and_none_clears(tmp_path):
+    run_setup(tmp_path, argv=["setup", "--host", "0.0.0.0", "--port", "9443",
+                              "--allow-from", "172.17.17.2",
+                              "--allow-from", "10.20.0.0/24"])
+    assert allowed(tmp_path) == "172.17.17.2,10.20.0.0/24"
+    _, system = run_setup(tmp_path, argv=["setup", "--keep", "--allow-from",
+                                          "none"],
+                          system=FakeSystem(ufw=True))
+    assert allowed(tmp_path) is None
+    assert system.ran("ufw delete allow from 172.17.17.2 to any port 9443")
+    assert system.ran("ufw delete allow from 10.20.0.0/24 to any port 9443")
+
+
+def test_a_bad_allow_from_stops_without_writing(tmp_path):
+    with pytest.raises(SystemExit) as stop:
+        run_setup(tmp_path, argv=["setup", "--host", "0.0.0.0", "--port",
+                                  "9443", "--allow-from", "0.0.0.0/0"])
+    assert "everyone" in str(stop.value)
+    assert not (tmp_path / "sync.env").exists()
+
+
+def test_flags_and_keep_leave_the_extra_addresses_as_they_are(tmp_path):
+    run_setup(tmp_path, answers=["", "", "172.17.17.2"])
+    run_setup(tmp_path, argv=["setup", "--keep", "--port", "9000"])
+    assert allowed(tmp_path) == "172.17.17.2"
+    run_setup(tmp_path, argv=["setup", "--keep"])
+    assert allowed(tmp_path) == "172.17.17.2"
+
+
+def test_a_new_port_moves_the_extra_rule_too(tmp_path):
+    run_setup(tmp_path, answers=["2", "", "172.17.17.2"],
+              system=FakeSystem(ufw=True))
+    _, system = run_setup(tmp_path, argv=["setup", "--keep", "--port", "9443"],
+                          system=FakeSystem(ufw=True))
+    assert system.ran("ufw delete allow from 172.17.17.2 to any port 8787")
+    assert system.ran("ufw allow from 172.17.17.2 to any port 9443")
+
+
+def test_this_machine_only_is_not_asked_and_opens_nothing(tmp_path):
+    _, system = run_setup(tmp_path, answers=["4", ""],
+                          system=FakeSystem(ufw=True))
+    assert not system.ran("ufw allow")
+
+
+def test_with_ufw_off_the_extra_rule_is_printed(tmp_path):
+    out, system = run_setup(tmp_path, answers=["", "", "172.17.17.2"])
+    assert "sudo ufw allow from 172.17.17.2 to any port 8787" in out
+    assert not system.ran("ufw allow")
+
+
+def test_windows_extra_addresses_join_the_one_rule(tmp_path):
+    out, system = win_setup(tmp_path, answers=["", "9443", "172.17.17.2"])
+    [rule] = system.ran("New-NetFirewallRule")
+    assert "-RemoteAddress 'LocalSubnet','172.17.17.2'" in rule
+    assert "and 172.17.17.2" in out
+
+
+def test_windows_upgrade_keeps_the_extra_addresses(tmp_path):
+    win_setup(tmp_path, answers=["", "", "172.17.17.2"])
+    _, system = win_setup(tmp_path, argv=["setup", "--keep"])
+    [rule] = system.ran("New-NetFirewallRule")
+    assert "'172.17.17.2'" in rule
 
 
 # --- Windows ---------------------------------------------------------------
@@ -378,7 +512,7 @@ def test_windows_one_network_comes_back_as_an_object_not_a_list():
 
 
 def test_windows_setup_creates_the_startup_task(tmp_path):
-    out, system = win_setup(tmp_path, answers=["", "9443"])
+    out, system = win_setup(tmp_path, answers=["", "9443", ""])
     [task] = system.ran("Register-ScheduledTask")
     assert "LOCAL SERVICE" in task and "-AtStartup" in task
     assert "[TimeSpan]::Zero" in task            # no 72-hour time limit
@@ -389,7 +523,7 @@ def test_windows_setup_creates_the_startup_task(tmp_path):
 
 
 def test_windows_setup_opens_the_firewall_for_local_networks(tmp_path):
-    out, system = win_setup(tmp_path, answers=["", "9443"])
+    out, system = win_setup(tmp_path, answers=["", "9443", ""])
     [rule] = system.ran("New-NetFirewallRule")
     assert "-LocalPort 9443" in rule and "'LocalSubnet'" in rule
     assert "-Direction Inbound" in rule
@@ -398,7 +532,7 @@ def test_windows_setup_opens_the_firewall_for_local_networks(tmp_path):
 
 
 def test_windows_one_network_allows_just_that_range(tmp_path):
-    _, system = win_setup(tmp_path, answers=["2", ""])
+    _, system = win_setup(tmp_path, answers=["2", "", ""])
     [rule] = system.ran("New-NetFirewallRule")
     assert "'192.168.1.0/24'" in rule
 
@@ -410,7 +544,7 @@ def test_windows_this_machine_only_needs_no_rule(tmp_path):
 
 
 def test_windows_token_is_locked_down_and_shown_once(tmp_path):
-    out, system = win_setup(tmp_path, answers=["", ""])
+    out, system = win_setup(tmp_path, answers=["", "", ""])
     token = (tmp_path / "token").read_text().strip()
     assert token in out
     [acl] = system.ran("icacls " + str(tmp_path / "token"))
@@ -420,7 +554,7 @@ def test_windows_token_is_locked_down_and_shown_once(tmp_path):
 
 
 def test_windows_rerunning_setup_replaces_the_task(tmp_path):
-    win_setup(tmp_path, answers=["", ""])
+    win_setup(tmp_path, answers=["", "", ""])
     _, system = win_setup(tmp_path, argv=["setup", "--keep"])
     assert system.ran("Register-ScheduledTask") and \
         "-Force" in system.ran("Register-ScheduledTask")[0]
@@ -428,7 +562,7 @@ def test_windows_rerunning_setup_replaces_the_task(tmp_path):
 
 def test_windows_a_task_that_cannot_be_created_stops_setup(tmp_path):
     with pytest.raises(SystemExit) as stop:
-        win_setup(tmp_path, answers=["", ""],
+        win_setup(tmp_path, answers=["", "", ""],
                   system=FakeSystem(fail=("Register-ScheduledTask",)))
     assert "scheduled task" in str(stop.value)
 
@@ -440,7 +574,7 @@ def test_windows_new_token_restarts_the_task(tmp_path):
 
 
 def test_windows_remove_deletes_task_and_rule_but_keeps_the_data(tmp_path):
-    win_setup(tmp_path, answers=["", ""])
+    win_setup(tmp_path, answers=["", "", ""])
     out, system = win_setup(tmp_path, argv=["remove"])
     [cmd] = system.calls
     text = " ".join(cmd)
@@ -536,7 +670,7 @@ def test_the_menu_offers_network_port_and_the_token(tmp_path):
     run_setup(tmp_path, argv=["setup", "--host", "10.8.0.1", "--port", "9000"])
     out, _ = run_setup(tmp_path, answers=["4"], argv=["menu"])
     assert "Listening on 10.8.0.1:9000" in out
-    assert "1) Change network or port" in out
+    assert "1) Change network, port or allowed addresses" in out
     assert "2) Replace the token" in out
     assert "3) Show the token" in out
     assert "4) Close" in out
@@ -552,7 +686,7 @@ def test_the_menu_replaces_the_token(tmp_path):
 
 def test_the_menu_changes_the_port_then_comes_back(tmp_path):
     run_setup(tmp_path, argv=["setup", "--host", "10.8.0.1", "--port", "9000"])
-    out, _ = run_setup(tmp_path, answers=["1", "", "9443", "3", "4"],
+    out, _ = run_setup(tmp_path, answers=["1", "", "9443", "", "3", "4"],
                        argv=["menu"])
     assert passman_setup.read_env(tmp_path / "sync.env")["PASSMAN_PORT"] == \
         "9443"
