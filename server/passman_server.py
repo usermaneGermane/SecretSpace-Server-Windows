@@ -29,6 +29,7 @@ import argparse
 import tempfile
 import threading
 from datetime import datetime, timezone
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 #: Refuse anything larger than this. A vault is kilobytes; a megabyte is
@@ -215,6 +216,13 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
         sys.stderr.flush()
 
+    def log_request(self, code="-", size="-"):
+        """The standard access line, with the query string cut out."""
+        if isinstance(code, HTTPStatus):
+            code = code.value
+        line = re.sub(r"\?\S*", "", self.requestline, count=1)
+        self.log_message('"%s" %s %s', line, str(code), str(size))
+
     def _authorised(self) -> bool:
         header = self.headers.get("Authorization", "")
         prefix = "Bearer "
@@ -227,7 +235,7 @@ class Handler(BaseHTTPRequestHandler):
     def _user_from_path(self):
         """Parse /vault/<user>[/meta] and reject anything else."""
         parts = [p for p in self.path.split("?")[0].split("/") if p]
-        if not parts or parts[0] != "vault" or len(parts) < 2:
+        if not parts or parts[0] != "vault" or not 2 <= len(parts) <= 3:
             return None, None
         user = parts[1]
         tail = parts[2] if len(parts) > 2 else ""

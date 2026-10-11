@@ -369,8 +369,15 @@ firewall: they point `--config-dir` at a temporary folder and fake
 PowerShell. GitHub Actions runs them on Windows with Python 3.12 and 3.13
 for every pull request and every push to `main`.
 
+`tests/test_server_http.py` talks to a real server on a free port of
+127.0.0.1, with no client involved: the token, which paths exist, If-Match
+(including two pushes racing for one revision), malformed and oversized
+bodies, the history limit and the access log. It is the same file in
+PassMan-Server-Linux.
+
 `server/passman_server.py` and `server/passman_setup.py` are the same files
 as in PassMan-Server-Linux — `passman_setup.py` holds the setup for both
 systems. Make a change to either in both repositories, so the two servers
-never drift apart. PassMan-Client-Windows keeps a copy of
-`passman_server.py` for its end-to-end sync tests; refresh that too.
+never drift apart. PassMan-Client-Windows and PassMan-Client-Linux each keep
+a copy of `passman_server.py` for their end-to-end sync tests; refresh
+those too.
