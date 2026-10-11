@@ -18,7 +18,7 @@ have their own repositories:
 | Repository | What it holds |
 |---|---|
 | [PassMan-Client-Windows](https://github.com/usermaneGermane/PassMan-Client-Windows) | the app for Windows — what your PCs run |
-| [PassMan-Client-Linux](https://github.com/usermaneGermane/PassMan-Client-Linux) | the app for Linux — not written yet |
+| [PassMan-Client-Linux](https://github.com/usermaneGermane/PassMan-Client-Linux) | the app for Linux — from source or a .deb package |
 | **PassMan-Server-Windows** (this one) | the server for Windows |
 | [PassMan-Server-Linux](https://github.com/usermaneGermane/PassMan-Server-Linux) | the same server for Linux, run by systemd |
 
