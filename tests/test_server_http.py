@@ -123,7 +123,7 @@ def test_everything_but_health_needs_the_token(server, header):
     for method, path in (("GET", "/vault/alice"),
                          ("GET", "/vault/alice/meta"),
                          ("PUT", "/vault/alice")):
-        body = {"blob": VAULT_1} if method == "PUT" else None
+        body = None                     # refused before any body is read
         status, _, payload = server.request(method, path, body, headers,
                                             token=None)
         assert status == 401, (method, path)
@@ -156,7 +156,7 @@ def test_the_right_token_is_let_in(server):
     ("PUT", "/health"),
 ])
 def test_anything_but_a_vault_or_its_meta_is_not_found(server, method, path):
-    body = {"blob": VAULT_1} if method == "PUT" else None
+    body = None                         # refused before any body is read
     status, _, _ = server.request(method, path, body)
     assert status == 404
 
@@ -167,14 +167,14 @@ def test_anything_but_a_vault_or_its_meta_is_not_found(server, method, path):
 ])
 def test_a_dangerous_or_impossible_username_is_refused(server, user):
     for method in ("GET", "PUT"):
-        body = {"blob": VAULT_1} if method == "PUT" else None
+        body = None                     # refused before any body is read
         status, _, _ = server.request(method, f"/vault/{user}", body)
         assert status == 404, (method, user)
     assert os.listdir(server.store.root) == []
 
 
 def test_a_path_cannot_climb_out_of_the_store(server):
-    status, _, _ = server.push("../outside", VAULT_1)
+    status, _, _ = server.request("PUT", "/vault/../outside")
     assert status == 404
     assert not os.path.exists(os.path.join(server.store.root, "..", "outside"))
 
@@ -197,7 +197,7 @@ def test_a_query_string_does_not_change_the_route(server):
 @pytest.mark.parametrize("method", ["POST", "DELETE", "PATCH"])
 def test_methods_other_than_get_and_put_are_not_served(server, method):
     server.push("alice", VAULT_1)
-    status, _, _ = server.request(method, "/vault/alice", {"blob": VAULT_2})
+    status, _, _ = server.request(method, "/vault/alice")
     assert status == 501
     assert server.store.read("alice") == VAULT_1.encode()
 
@@ -377,7 +377,7 @@ def test_a_nonsense_content_length_is_refused(server):
 
 def test_a_body_larger_than_any_vault_is_refused_unread(server):
     """Refused on the declared length alone, before reading a byte of it."""
-    status, _, payload = raw_put(server, b"{}",
+    status, _, payload = raw_put(server, b"",
                                  content_length=passman_server.MAX_BODY + 1)
     assert status == 413
     assert server.store.exists("alice") is False
@@ -492,10 +492,17 @@ def test_the_log_leaves_out_the_query_string(server, capsys):
 def test_a_garbled_request_is_refused_and_the_server_carries_on(server,
                                                                 line):
     with socket.create_connection(("127.0.0.1", server.port), timeout=10) as s:
-        s.sendall(line + b"\r\n\r\n")
-        answer = s.recv(4096)
-    # A line without an HTTP version is answered HTTP/0.9-style: the error
-    # page with no status line. Either way it is an error, never a vault.
-    assert b"Error" in answer and b"blob" not in answer
+        # Only the line: the server refuses it before reading further, and
+        # bytes left unread when it closes can turn the close into a reset
+        # that loses the answer.
+        s.sendall(line + b"\r\n")
+        # Read until the server closes: headers and page may arrive apart.
+        answer = b""
+        while chunk := s.recv(4096):
+            answer += chunk
+    # Some Python versions answer a line without an HTTP version
+    # HTTP/0.9-style, with no status line; every version sends the error
+    # page. Either way it is an error, never a vault.
+    assert b"Error code" in answer and b"blob" not in answer
     status, _, _ = server.request("GET", "/health", token=None)
     assert status == 200
