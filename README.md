@@ -132,9 +132,9 @@ in every synced vault.
 
 **A PC on another network** — behind a router, or on a VPN this PC is not
 part of — is outside the firewall rule, which covers the networks this PC
-is on. The setup's third question asks for such addresses (`172.17.17.2`,
+is on. The setup's third question asks for such addresses (`192.168.0.1`,
 or a network such as `10.20.0.0/24`; comma-separated, `-` for none), or from
-an administrator terminal: `… setup --keep --allow-from 172.17.17.2`. They
+an administrator terminal: `… setup --keep --allow-from 192.168.0.1`. They
 join the same rule, and an upgrade keeps them.
 
 **If the token leaks**, choose **Replace the token**. It asks for
@@ -381,3 +381,7 @@ systems. Make a change to either in both repositories, so the two servers
 never drift apart. PassMan-Client-Windows and PassMan-Client-Linux each keep
 a copy of `passman_server.py` for their end-to-end sync tests; refresh
 those too.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
