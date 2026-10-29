@@ -14,7 +14,7 @@ Windows (PassMan-Server-Installer.exe runs the first one for you):
 and which port, writes them to sync.env, creates the token if there is none
 yet, and opens the port in the firewall for the networks it serves -- plus
 any other addresses you name, such as a PC on a network this machine is not
-on (`--allow-from 172.17.17.2`):
+on (`--allow-from 192.168.0.1`):
 
 - Linux: sync.env is /etc/passman/sync.env, which the systemd unit loads.
   The firewall rule is added when ufw is on; ufw is never switched on from
@@ -184,7 +184,7 @@ def render_env(host, port, allow=()):
 
 def check_allow(text):
     """
-    Extra addresses to let in, from "172.17.17.2, 10.20.0.0/24": a list of
+    Extra addresses to let in, from "192.168.0.1, 10.20.0.0/24": a list of
     addresses and networks, or a message. One address stays one address
     (no /32), so it matches a rule typed by hand. Everyone (/0) is refused:
     that is what the firewall is there to stop.
@@ -285,7 +285,7 @@ def choose_port(ask, say, current):
 def choose_allow(ask, say, current):
     """Extra addresses; Enter keeps the current ones, - clears them."""
     say("Let in any other addresses? For a PC on a network this machine is "
-        "not on, e.g. 172.17.17.2 or 10.20.0.0/24; comma-separated, - for "
+        "not on, e.g. 192.168.0.1 or 10.20.0.0/24; comma-separated, - for "
         "none.")
     shown = ",".join(current) or "none"
     while True:

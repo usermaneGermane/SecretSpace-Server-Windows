@@ -365,10 +365,10 @@ def allowed(tmp_path):
 
 
 @pytest.mark.parametrize("text, expected", [
-    ("172.17.17.2", ["172.17.17.2"]),
-    (" 172.17.17.2 , 10.20.0.0/24 ", ["172.17.17.2", "10.20.0.0/24"]),
+    ("192.168.0.1", ["192.168.0.1"]),
+    (" 192.168.0.1 , 10.20.0.0/24 ", ["192.168.0.1", "10.20.0.0/24"]),
     ("10.20.0.7/24", ["10.20.0.0/24"]),
-    ("172.17.17.2/32", ["172.17.17.2"]),     # matches a rule typed by hand
+    ("192.168.0.1/32", ["192.168.0.1"]),     # matches a rule typed by hand
     ("1.2.3.4,1.2.3.4", ["1.2.3.4"]),
     ("-", []), ("none", []), ("", []),
 ])
@@ -384,9 +384,9 @@ def test_allow_from_refuses_everyone_and_nonsense(bad):
 
 
 def test_the_question_saves_extra_addresses(tmp_path):
-    out, _ = run_setup(tmp_path, answers=["", "", "172.17.17.2"])
-    assert allowed(tmp_path) == "172.17.17.2"
-    assert "Also let in: 172.17.17.2" in out
+    out, _ = run_setup(tmp_path, answers=["", "", "192.168.0.1"])
+    assert allowed(tmp_path) == "192.168.0.1"
+    assert "Also let in: 192.168.0.1" in out
     # Host and port are still what the server reads.
     env = passman_setup.read_env(tmp_path / "sync.env")
     assert listen(env) == ("0.0.0.0", 8787)
@@ -399,19 +399,19 @@ def test_a_bad_extra_address_is_asked_again(tmp_path):
 
 
 def test_enter_keeps_the_extra_addresses_and_dash_clears_them(tmp_path):
-    run_setup(tmp_path, answers=["", "", "172.17.17.2"])
+    run_setup(tmp_path, answers=["", "", "192.168.0.1"])
     run_setup(tmp_path, answers=["", "", ""])
-    assert allowed(tmp_path) == "172.17.17.2"
+    assert allowed(tmp_path) == "192.168.0.1"
     run_setup(tmp_path, answers=["", "", "-"])
     assert allowed(tmp_path) is None
 
 
 def test_with_ufw_on_the_extra_address_gets_its_rule(tmp_path):
-    out, system = run_setup(tmp_path, answers=["2", "9443", "172.17.17.2"],
+    out, system = run_setup(tmp_path, answers=["2", "9443", "192.168.0.1"],
                             system=FakeSystem(ufw=True))
     assert system.ran("ufw allow from 192.168.1.0/24 to any port 9443 "
                       "proto tcp")
-    assert system.ran("ufw allow from 172.17.17.2 to any port 9443 proto tcp")
+    assert system.ran("ufw allow from 192.168.0.1 to any port 9443 proto tcp")
 
 
 def test_allow_from_alone_adds_the_rule_without_a_restart(tmp_path):
@@ -419,24 +419,24 @@ def test_allow_from_alone_adds_the_rule_without_a_restart(tmp_path):
     another network needs in. Only the firewall changes."""
     run_setup(tmp_path, argv=["setup", "--host", "0.0.0.0", "--port", "9443"])
     out, system = run_setup(
-        tmp_path, argv=["setup", "--keep", "--allow-from", "172.17.17.2"],
+        tmp_path, argv=["setup", "--keep", "--allow-from", "192.168.0.1"],
         system=FakeSystem(ufw=True, active=True))
-    assert system.ran("ufw allow from 172.17.17.2 to any port 9443 proto tcp")
+    assert system.ran("ufw allow from 192.168.0.1 to any port 9443 proto tcp")
     assert not system.ran("ufw delete")
     assert not system.restarted
-    assert allowed(tmp_path) == "172.17.17.2"
+    assert allowed(tmp_path) == "192.168.0.1"
 
 
 def test_allow_from_repeats_and_none_clears(tmp_path):
     run_setup(tmp_path, argv=["setup", "--host", "0.0.0.0", "--port", "9443",
-                              "--allow-from", "172.17.17.2",
+                              "--allow-from", "192.168.0.1",
                               "--allow-from", "10.20.0.0/24"])
-    assert allowed(tmp_path) == "172.17.17.2,10.20.0.0/24"
+    assert allowed(tmp_path) == "192.168.0.1,10.20.0.0/24"
     _, system = run_setup(tmp_path, argv=["setup", "--keep", "--allow-from",
                                           "none"],
                           system=FakeSystem(ufw=True))
     assert allowed(tmp_path) is None
-    assert system.ran("ufw delete allow from 172.17.17.2 to any port 9443")
+    assert system.ran("ufw delete allow from 192.168.0.1 to any port 9443")
     assert system.ran("ufw delete allow from 10.20.0.0/24 to any port 9443")
 
 
@@ -449,20 +449,20 @@ def test_a_bad_allow_from_stops_without_writing(tmp_path):
 
 
 def test_flags_and_keep_leave_the_extra_addresses_as_they_are(tmp_path):
-    run_setup(tmp_path, answers=["", "", "172.17.17.2"])
+    run_setup(tmp_path, answers=["", "", "192.168.0.1"])
     run_setup(tmp_path, argv=["setup", "--keep", "--port", "9000"])
-    assert allowed(tmp_path) == "172.17.17.2"
+    assert allowed(tmp_path) == "192.168.0.1"
     run_setup(tmp_path, argv=["setup", "--keep"])
-    assert allowed(tmp_path) == "172.17.17.2"
+    assert allowed(tmp_path) == "192.168.0.1"
 
 
 def test_a_new_port_moves_the_extra_rule_too(tmp_path):
-    run_setup(tmp_path, answers=["2", "", "172.17.17.2"],
+    run_setup(tmp_path, answers=["2", "", "192.168.0.1"],
               system=FakeSystem(ufw=True))
     _, system = run_setup(tmp_path, argv=["setup", "--keep", "--port", "9443"],
                           system=FakeSystem(ufw=True))
-    assert system.ran("ufw delete allow from 172.17.17.2 to any port 8787")
-    assert system.ran("ufw allow from 172.17.17.2 to any port 9443")
+    assert system.ran("ufw delete allow from 192.168.0.1 to any port 8787")
+    assert system.ran("ufw allow from 192.168.0.1 to any port 9443")
 
 
 def test_this_machine_only_is_not_asked_and_opens_nothing(tmp_path):
@@ -472,23 +472,23 @@ def test_this_machine_only_is_not_asked_and_opens_nothing(tmp_path):
 
 
 def test_with_ufw_off_the_extra_rule_is_printed(tmp_path):
-    out, system = run_setup(tmp_path, answers=["", "", "172.17.17.2"])
-    assert "sudo ufw allow from 172.17.17.2 to any port 8787" in out
+    out, system = run_setup(tmp_path, answers=["", "", "192.168.0.1"])
+    assert "sudo ufw allow from 192.168.0.1 to any port 8787" in out
     assert not system.ran("ufw allow")
 
 
 def test_windows_extra_addresses_join_the_one_rule(tmp_path):
-    out, system = win_setup(tmp_path, answers=["", "9443", "172.17.17.2"])
+    out, system = win_setup(tmp_path, answers=["", "9443", "192.168.0.1"])
     [rule] = system.ran("New-NetFirewallRule")
-    assert "-RemoteAddress 'LocalSubnet','172.17.17.2'" in rule
-    assert "and 172.17.17.2" in out
+    assert "-RemoteAddress 'LocalSubnet','192.168.0.1'" in rule
+    assert "and 192.168.0.1" in out
 
 
 def test_windows_upgrade_keeps_the_extra_addresses(tmp_path):
-    win_setup(tmp_path, answers=["", "", "172.17.17.2"])
+    win_setup(tmp_path, answers=["", "", "192.168.0.1"])
     _, system = win_setup(tmp_path, argv=["setup", "--keep"])
     [rule] = system.ran("New-NetFirewallRule")
-    assert "'172.17.17.2'" in rule
+    assert "'192.168.0.1'" in rule
 
 
 # --- Windows ---------------------------------------------------------------
