@@ -384,4 +384,12 @@ those too.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Free software under the **GNU General Public License v3.0 only**
+(GPL-3.0-only) — see [LICENSE](LICENSE). You may use, run, study, change and
+share it; if you distribute a changed version, it must stay under the same
+licence, with its source.
+
+The other PassMan repositories (the Windows and Linux clients and sync servers)
+are free software under the same licence.
+
+Security issues: please report them privately, see [SECURITY.md](SECURITY.md).
