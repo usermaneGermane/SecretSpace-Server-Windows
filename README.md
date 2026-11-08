@@ -12,6 +12,11 @@ your PC.
 
 It needs no Python: the installer brings everything with it.
 
+**Which apps it serves.** PassMan for Windows 2.x and PassMan for Linux
+0.x sync with it. The PassMan 3 test versions (Windows 3.0.0-alpha, Linux
+1.0.0-alpha) do not sync yet: they need accounts on the server, which come
+with server 2.0.
+
 This repository is the server for **Windows**. The other parts of PassMan
 have their own repositories:
 
