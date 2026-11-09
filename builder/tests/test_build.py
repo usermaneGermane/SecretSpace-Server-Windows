@@ -136,7 +136,7 @@ def test_iscc_found_in_the_per_user_location(monkeypatch):
 def project(tmp_path):
     (tmp_path / "server").mkdir()
     (tmp_path / "server" / "version.py").write_text('__version__ = "9.8.7"\n')
-    (tmp_path / "PassMan-Server-Installer.exe").write_text("last time's build")
+    (tmp_path / "SecretSpace-Server-Installer.exe").write_text("last time's build")
     return str(tmp_path)
 
 
@@ -147,7 +147,7 @@ def test_build_runs_the_steps_in_order(project):
                        runner=runner, exists=lambda p: True)
     cmds = [" ".join(c) for c, _ in runner.calls]
     assert "PassMan-Server.spec" in cmds[0]
-    assert "/DAppVersion=9.8.7" in cmds[1] and "PassMan-Server.iss" in cmds[1]
+    assert "/DAppVersion=9.8.7" in cmds[1] and "SecretSpace-Server.iss" in cmds[1]
     assert len(cmds) == 2
 
 
@@ -155,13 +155,13 @@ def test_only_the_server_is_built():
     """The app has its own repository and its own build."""
     steps = build.build_steps("P", build.Python(["py"], "3", "p"), "iscc", "1")
     products = [os.path.basename(product) for _, _, product in steps]
-    assert products == ["PassMan-Server.exe", "PassMan-Server-Installer.exe"]
+    assert products == ["PassMan-Server.exe", "SecretSpace-Server-Installer.exe"]
 
 
 def test_old_outputs_are_removed_before_building(project):
     build.remove_previous(project)
     assert not os.path.exists(os.path.join(project,
-                                           "PassMan-Server-Installer.exe"))
+                                           "SecretSpace-Server-Installer.exe"))
 
 
 def test_build_stops_at_the_first_failure(project):

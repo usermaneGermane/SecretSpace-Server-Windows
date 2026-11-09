@@ -1,4 +1,4 @@
-# PassMan sync server for Windows
+# SecretSpace sync server for Windows
 
 A place to keep your encrypted vault so two PCs can stay in step. It stores
 one blob per user, numbers each revision, and refuses a write computed against
@@ -12,20 +12,30 @@ your PC.
 
 It needs no Python: the installer brings everything with it.
 
-**Which apps it serves.** PassMan for Windows 2.x and PassMan for Linux
-0.x sync with it. The PassMan 3 test versions (Windows 3.0.0-alpha, Linux
+**Formerly PassMan.** The project was renamed to SecretSpace in November
+2026, because another password manager already uses the name PassMan. The
+installer (`SecretSpace-Server-Installer.exe`), its entry in Settings → Apps
+and the Start Menu folder carry the new name. What a running server is made
+of keeps its name, so an upgrade finds and replaces it: the programs
+`PassMan-Server.exe` and `PassMan-Server-Setup.exe`, the task and firewall
+rule **PassMan Sync Server**, `%ProgramData%\PassMan Server`, and the
+`X-PassMan-*` headers of the sync protocol. An upgrade keeps the program
+folder it was installed in.
+
+**Which apps it serves.** SecretSpace for Windows 2.x and SecretSpace for Linux
+0.x sync with it. The SecretSpace 3 test versions (Windows 3.0.0-alpha, Linux
 1.0.0-alpha) do not sync yet: they need accounts on the server, which come
 with server 2.0.
 
-This repository is the server for **Windows**. The other parts of PassMan
+This repository is the server for **Windows**. The other parts of SecretSpace
 have their own repositories:
 
 | Repository | What it holds |
 |---|---|
-| [PassMan-Client-Windows](https://github.com/usermaneGermane/PassMan-Client-Windows) | the app for Windows — what your PCs run |
-| [PassMan-Client-Linux](https://github.com/usermaneGermane/PassMan-Client-Linux) | the app for Linux — from source or a .deb package |
-| **PassMan-Server-Windows** (this one) | the server for Windows |
-| [PassMan-Server-Linux](https://github.com/usermaneGermane/PassMan-Server-Linux) | the same server for Linux, run by systemd |
+| [SecretSpace-Client-Windows](https://github.com/usermaneGermane/SecretSpace-Client-Windows) | the app for Windows — what your PCs run |
+| [SecretSpace-Client-Linux](https://github.com/usermaneGermane/SecretSpace-Client-Linux) | the app for Linux — from source or a .deb package |
+| **SecretSpace-Server-Windows** (this one) | the server for Windows |
+| [SecretSpace-Server-Linux](https://github.com/usermaneGermane/SecretSpace-Server-Linux) | the same server for Linux, run by systemd |
 
 ## Before you start
 
@@ -43,20 +53,20 @@ The steps below use `192.168.1.60` for the server and `8787` for the port.
 
 ## The three files
 
-The server is its own download, **`PassMan-Server-Installer.exe`**, separate
-from the app's `PassMan-Client-Installer.exe`. Either works without the
+The server is its own download, **`SecretSpace-Server-Installer.exe`**, separate
+from the app's `SecretSpace-Client-Installer.exe`. Either works without the
 other: install only the server on the PC that stays on, only the app on the
 PCs — or both on one PC.
 
 | File | What it does |
 |---|---|
-| `PassMan-Server-Installer.exe` | **installs** (or upgrades) the server — the download |
+| `SecretSpace-Server-Installer.exe` | **installs** (or upgrades) the server — the download |
 | `PassMan-Server.exe` | **is** the server; the startup task runs it, you never need to |
 | `PassMan-Server-Setup.exe` | **changes the settings** — network, port, token. Installs and unpacks nothing |
 
 ## Install
 
-1. **Run `PassMan-Server-Installer.exe`** and allow it to make changes (it
+1. **Run `SecretSpace-Server-Installer.exe`** and allow it to make changes (it
    installs for the whole machine). It is not code-signed, so SmartScreen
    may warn first: **More info → Run anyway**. Near the end it runs
    `PassMan-Server-Setup.exe` in a console window, which asks two things:
@@ -68,14 +78,14 @@ PCs — or both on one PC.
      another from 1024 to 65535.
 2. **Note what it prints**: the token, and the address to enter on each PC,
    e.g. `http://192.168.1.60:8787`. Then press Enter to close the window.
-3. **Connect PassMan** on each PC — see [below](#connect-passman).
+3. **Connect SecretSpace** on each PC — see [below](#connect-passman).
 
 The setup did the rest:
 
 | What | Where |
 |---|---|
-| the programs | `C:\Program Files\PassMan Server\` (`PassMan-Server.exe`, `PassMan-Server-Setup.exe`) |
-| settings, token, vaults, log | `C:\ProgramData\PassMan Server\` (`sync.env`, `token`, `store\`, `logs\server.log`) |
+| the programs | `C:\Program Files\SecretSpace Server\` (`PassMan-Server.exe`, `PassMan-Server-Setup.exe`) |
+| settings, token, vaults, log | `C:\ProgramData\SecretSpace Server\` (`sync.env`, `token`, `store\`, `logs\server.log`) |
 | starts with Windows, nobody logged in | Task Scheduler → **PassMan Sync Server**, as LOCAL SERVICE |
 | firewall | Windows Defender Firewall → inbound rule **PassMan Sync Server (TCP *port*)**, open to the networks this PC is on (or just the one you picked) |
 
@@ -85,10 +95,10 @@ passed on the command line, which every user on the machine can read.
 For a silent install, e.g. for testing:
 
 ```
-PassMan-Server-Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /HOST=0.0.0.0 /PORT=8787
+SecretSpace-Server-Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /HOST=0.0.0.0 /PORT=8787
 ```
 
-## Connect PassMan
+## Connect SecretSpace
 
 Get the token: double-click `PassMan-Server-Setup.exe` and choose **Show the
 token**, or use the Start Menu shortcut of the same name.
@@ -104,7 +114,7 @@ not.
 the same address and token, your username and your master password. After
 that, press **Sync** on either PC whenever you like.
 
-To check it worked, `C:\ProgramData\PassMan Server\store\<username>\vault.enc`
+To check it worked, `C:\ProgramData\SecretSpace Server\store\<username>\vault.enc`
 appears after the first sync, and the server log shows the requests. The log
 records usernames and status codes — never the vault, never the token.
 
@@ -121,12 +131,12 @@ administrator rights) and it shows where the server listens now, then:
 ```
 
 After each choice the menu comes back, so you can change the port and then
-show the token, until **Close**. The Start Menu folder **PassMan Server** has
+show the token, until **Close**. The Start Menu folder **SecretSpace Server** has
 a shortcut for each, and one to open the **server log**. From an
 administrator terminal, each one directly:
 
 ```
-"C:\Program Files\PassMan Server\PassMan-Server-Setup.exe" setup | show-token | new-token
+"C:\Program Files\SecretSpace Server\PassMan-Server-Setup.exe" setup | show-token | new-token
 ```
 
 For a script, skip the questions: `… setup --host 0.0.0.0 --port 9443`.
@@ -152,18 +162,18 @@ and if the vault might have been copied, change the master password too.
 
 ## Upgrading
 
-Run the newer `PassMan-Server-Installer.exe`. It stops the server, replaces
+Run the newer `SecretSpace-Server-Installer.exe`. It stops the server, replaces
 the program files, keeps the network, port and token without asking, and
 starts the server again — it is not the way to change the port.
 
-**Upgrade the server before changing a master password** in PassMan. The
+**Upgrade the server before changing a master password** in SecretSpace. The
 server records how many times each vault's password has changed; an older
 server does not, and after a second change it can send a PC the wrong way.
 
 ## Uninstalling
 
-Settings → Apps → **PassMan Server** removes the programs, the task and the
-firewall rule, and **keeps** `C:\ProgramData\PassMan Server` — your vaults.
+Settings → Apps → **SecretSpace Server** removes the programs, the task and the
+firewall rule, and **keeps** `C:\ProgramData\SecretSpace Server` — your vaults.
 Delete that folder yourself if you are sure.
 
 ## Troubleshooting
@@ -172,7 +182,7 @@ Delete that folder yourself if you are sure.
 failures are simply that nothing is running:
 
 - Task Scheduler → **PassMan Sync Server** should be *Running*.
-- The server log (Start Menu → PassMan Server → Server log) says why it
+- The server log (Start Menu → SecretSpace Server → Server log) says why it
   stopped, if it did.
 - On the server itself, in PowerShell:
   `curl.exe http://127.0.0.1:8787/health` should answer
@@ -194,10 +204,10 @@ dropping it.
 | PC and server on different networks | Compare `ipconfig` on both; a VPN address and a LAN address are not the same network |
 | Server log: an address this PC no longer has | The network changed. Run the setup and pick again — every network (`0.0.0.0`) avoids this |
 | `Address already in use` in the log | Something else on the port. Pick another port in the setup |
-| PassMan: "rejected the sync token" | A stray space or line break when pasting; copy it again. Or the token was replaced — paste the new one |
-| PassMan: "Could not reach …" | Wrong address or port in Settings → Sync, the PC is on another network, or the firewall is blocking it |
+| SecretSpace: "rejected the sync token" | A stray space or line break when pasting; copy it again. Or the token was replaced — paste the new one |
+| SecretSpace: "Could not reach …" | Wrong address or port in Settings → Sync, the PC is on another network, or the firewall is blocking it |
 | It worked, then stopped | The server's address changed — see below |
-| PassMan asks for a master password when you press Sync | Expected after a password change on another PC (or on this one while offline) — see [Changing the master password](https://github.com/usermaneGermane/PassMan-Client-Windows#changing-the-master-password-of-a-vault-you-sync) |
+| SecretSpace asks for a master password when you press Sync | Expected after a password change on another PC (or on this one while offline) — see [Changing the master password](https://github.com/usermaneGermane/SecretSpace-Client-Windows#changing-the-master-password-of-a-vault-you-sync) |
 
 ## If the server's address changes
 
@@ -229,7 +239,7 @@ To get rid of a vault for good:
    Settings → **Delete this user**, which removes the vault, its backup and
    its sync state on that PC.
 2. **Then on the server:** delete
-   `C:\ProgramData\PassMan Server\store\<username>`. This removes the current
+   `C:\ProgramData\SecretSpace Server\store\<username>`. This removes the current
    copy, `meta.json` and all its history. The server does not need stopping;
    it reads the files on every request.
 
@@ -253,7 +263,7 @@ the encrypted blobs — without being able to decrypt them. On a home network
 or a VPN you trust, that is usually acceptable.
 
 The server can serve TLS with a pinned self-signed certificate (`--cert`,
-`--key`; PassMan-Server-Linux's README shows how), but the Windows setup does
+`--key`; SecretSpace-Server-Linux's README shows how), but the Windows setup does
 not set that up yet.
 
 ## API
@@ -286,7 +296,7 @@ which the client never sends — it exists for recovering by hand.
 
 ## What it keeps
 
-Inside `C:\ProgramData\PassMan Server\store`:
+Inside `C:\ProgramData\SecretSpace Server\store`:
 
 ```
 <user>\vault.enc        the current blob — encrypted
@@ -294,14 +304,14 @@ Inside `C:\ProgramData\PassMan Server\store`:
 <user>\history\*.enc    the last 20 revisions — encrypted
 ```
 
-One folder per PassMan username, so several vaults can share one server
+One folder per SecretSpace username, so several vaults can share one server
 without touching each other. `vault.enc` and the history are the same
 AES-256-GCM files as on the PCs; the server never has the key. `meta.json`
 and the folder name are plain: they reveal the username, when it last synced
 and roughly how large the vault is — never an entry.
 
 Each history file stays encrypted with the master password in use when it was
-written. When you change a master password, PassMan offers to delete them —
+written. When you change a master password, SecretSpace offers to delete them —
 ticked by default — since they would still open with the old one.
 
 History is server-side undo. To roll back: stop **PassMan Sync Server** in
@@ -314,7 +324,7 @@ safe outcome.
 
 This server is not a backup. It holds one copy of a file your PCs also hold,
 and it will happily store a vault you damaged. Keep
-`C:\ProgramData\PassMan Server\store` in whatever backs up the rest of the
+`C:\ProgramData\SecretSpace Server\store` in whatever backs up the rest of the
 machine — the contents are encrypted, so a backup of it is no more sensitive
 than the vault itself.
 
@@ -335,7 +345,7 @@ py builder\build.py --install-missing    install what is missing first
 ```
 
 It checks each prerequisite, offers pip and winget for what is missing, and
-writes `PassMan-Server-Installer.exe` here. The version comes from
+writes `SecretSpace-Server-Installer.exe` here. The version comes from
 `server/version.py`.
 
 ## Versions
@@ -349,9 +359,9 @@ separate from the app's and from the Linux server's.
 ## Project layout
 
 ```
-PassMan-Server-Windows/
+SecretSpace-Server-Windows/
 ├── builder/                     build.py: checks, then builds the installer
-├── installer/PassMan-Server.iss the Inno Setup script
+├── installer/SecretSpace-Server.iss the Inno Setup script
 └── server/
     ├── passman_server.py        the server (standard library only)
     ├── passman_setup.py         network, port, token, the task, the firewall rule
@@ -378,12 +388,12 @@ for every pull request and every push to `main`.
 127.0.0.1, with no client involved: the token, which paths exist, If-Match
 (including two pushes racing for one revision), malformed and oversized
 bodies, the history limit and the access log. It is the same file in
-PassMan-Server-Linux.
+SecretSpace-Server-Linux.
 
 `server/passman_server.py` and `server/passman_setup.py` are the same files
-as in PassMan-Server-Linux — `passman_setup.py` holds the setup for both
+as in SecretSpace-Server-Linux — `passman_setup.py` holds the setup for both
 systems. Make a change to either in both repositories, so the two servers
-never drift apart. PassMan-Client-Windows and PassMan-Client-Linux each keep
+never drift apart. SecretSpace-Client-Windows and SecretSpace-Client-Linux each keep
 a copy of `passman_server.py` for their end-to-end sync tests; refresh
 those too.
 
@@ -394,7 +404,7 @@ Free software under the **GNU General Public License v3.0 only**
 share it; if you distribute a changed version, it must stay under the same
 licence, with its source.
 
-The other PassMan repositories (the Windows and Linux clients and sync servers)
+The other SecretSpace repositories (the Windows and Linux clients and sync servers)
 are free software under the same licence.
 
 Security issues: please report them privately, see [SECURITY.md](SECURITY.md).

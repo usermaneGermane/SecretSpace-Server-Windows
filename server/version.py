@@ -7,4 +7,4 @@ and tag the release commit v<version>. It started at 1.0.0 and is separate
 from the app's and from the Linux server's.
 """
 
-__version__ = "1.1.2"
+__version__ = "1.2.0"

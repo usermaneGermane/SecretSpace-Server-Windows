@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-PassMan sync server setup -- where it listens, its token, its firewall rule.
+SecretSpace sync server setup -- where it listens, its token, its firewall rule.
 
 Linux (systemd):
     sudo python3 passman_setup.py              # ask, then write the settings
     sudo python3 passman_setup.py new-token    # replace a leaked token
     sudo python3 passman_setup.py show-token   # print the token
 
-Windows (PassMan-Server-Installer.exe runs the first one for you):
+Windows (SecretSpace-Server-Installer.exe runs the first one for you):
     PassMan-Server-Setup.exe [setup] | new-token | show-token | remove
 
 `setup` asks which address to listen on (listing this machine's networks)
@@ -172,7 +172,7 @@ def read_env(path):
 
 
 def render_env(host, port, allow=()):
-    text = ("# PassMan sync server -- written by passman_setup.py.\n"
+    text = ("# SecretSpace sync server -- written by passman_setup.py.\n"
             "# Change it by running the setup again.\n"
             f"PASSMAN_HOST={host}\n"
             f"PASSMAN_PORT={port}\n")
@@ -447,7 +447,7 @@ def restart_task(run):
 
 def firewall_windows(run, host, port, addresses, allow=()):
     """
-    Replace PassMan's inbound rule and say what it allows. Every network
+    Replace SecretSpace's inbound rule and say what it allows. Every network
     means LocalSubnet -- the networks this PC is on, whichever they are
     today -- and one network means just that range; the extra addresses
     are added to either. This machine only needs no rule at all.
@@ -655,7 +655,7 @@ def cmd_menu(args, ask=input, say=print, run=_run):
     while True:
         current = read_env(env_path)
         say("")
-        say("PassMan sync server")
+        say("SecretSpace sync server")
         if "PASSMAN_HOST" in current and "PASSMAN_PORT" in current:
             say(f"  Listening on {current['PASSMAN_HOST']}:"
                 f"{current['PASSMAN_PORT']}")
