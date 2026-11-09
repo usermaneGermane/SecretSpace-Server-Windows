@@ -78,7 +78,7 @@ PCs — or both on one PC.
      another from 1024 to 65535.
 2. **Note what it prints**: the token, and the address to enter on each PC,
    e.g. `http://192.168.1.60:8787`. Then press Enter to close the window.
-3. **Connect SecretSpace** on each PC — see [below](#connect-passman).
+3. **Connect SecretSpace** on each PC — see [below](#connect-secretspace).
 
 The setup did the rest:
 
