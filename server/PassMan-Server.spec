@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# The Windows server's program folder, which PassMan-Server-Installer.exe
+# The Windows server's program folder, which SecretSpace-Server-Installer.exe
 # ships. Two console programs sharing one _internal\ folder:
 #
 #   PassMan-Server.exe        the server; the startup task runs it
@@ -34,10 +34,10 @@ def program(script, name, description):
 
 
 server_a, server_exe = program('passman_server_exe.py', 'PassMan-Server',
-                               'PassMan sync server')
+                               'SecretSpace sync server')
 setup_a, setup_exe = program('passman_server_setup_exe.py',
                              'PassMan-Server-Setup',
-                             'PassMan sync server setup')
+                             'SecretSpace sync server setup')
 
 coll = COLLECT(
     server_exe, setup_exe,

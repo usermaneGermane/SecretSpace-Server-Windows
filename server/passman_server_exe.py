@@ -6,7 +6,7 @@ The startup task runs it with the settings PassMan-Server-Setup.exe chose:
     PassMan-Server.exe --host ... --port ... --store ... --token-file ...
 
 To change the network, the port or the token, use PassMan-Server-Setup.exe
-(Start Menu -> PassMan Server). This program still accepts the setup
+(Start Menu -> SecretSpace Server). This program still accepts the setup
 commands (setup, new-token, show-token, remove) and hands them over, because
 an installation made before the two were split uninstalls with
 `PassMan-Server.exe remove`.
@@ -22,7 +22,7 @@ import passman_server                                           # noqa: E402
 
 USAGE = ("This is the server that the startup task runs. To change its "
          "network, port or token, run PassMan-Server-Setup.exe (Start Menu "
-         "-> PassMan Server).")
+         "-> SecretSpace Server).")
 
 
 def main(argv=None):
@@ -30,7 +30,7 @@ def main(argv=None):
     if not argv:
         # Double-clicked: say what it is instead of failing for lack of a
         # token in a window that closes at once.
-        print("PassMan sync server.\n\n" + USAGE)
+        print("SecretSpace sync server.\n\n" + USAGE)
         input("\nPress Enter to close this window.")
         return
     # No server option takes a value that is also a command name.

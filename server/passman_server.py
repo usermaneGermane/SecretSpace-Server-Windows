@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PassMan sync server -- a store for encrypted vault blobs.
+SecretSpace sync server -- a store for encrypted vault blobs.
 
 What it is NOT: it cannot read your passwords. The client encrypts the vault
 with your master password before it ever reaches the network, so this process
@@ -524,7 +524,7 @@ def main(argv=None):
     # flush: under systemd stdout is a pipe and fully buffered, so without it
     # these lines never reach the journal while the server is running -- and
     # a silent journal after `systemctl start` reads as a failure.
-    print(f"PassMan sync on {scheme}://{args.host}:{args.port}")
+    print(f"SecretSpace sync on {scheme}://{args.host}:{args.port}")
     print(f"Vault store: {httpd.store.root}")
     if scheme == "http" and args.host not in ("127.0.0.1", "localhost"):
         print("NOTE: plain HTTP on a network address. Vaults are encrypted "

@@ -1,13 +1,13 @@
-; PassMan sync server installer for Windows - compiled by builder\build.py
+; SecretSpace sync server installer for Windows - compiled by builder\build.py
 ; with Inno Setup 6:
-;     ISCC.exe /DAppVersion=2.3.0 installer\PassMan-Server.iss
+;     ISCC.exe /DAppVersion=2.3.0 installer\SecretSpace-Server.iss
 ;
-; Separate from PassMan-Client-Installer.exe (the app): either can be
+; Separate from SecretSpace-Client-Installer.exe (the app): either can be
 ; installed, run and uninstalled without the other, on the same PC or on
 ; different ones.
 ;
 ; Installs for the whole machine (it needs administrator rights) into
-; Program Files\PassMan Server two programs: PassMan-Server.exe, the server,
+; Program Files\SecretSpace Server two programs: PassMan-Server.exe, the server,
 ; and PassMan-Server-Setup.exe, which changes its settings. At the end it
 ; runs PassMan-Server-Setup.exe in a console window, which asks for the
 ; network and port and creates:
@@ -16,11 +16,11 @@
 ;   - a Task Scheduler task "PassMan Sync Server" that starts the server
 ;     at boot as LOCAL SERVICE
 ; An upgrade keeps the saved network and port without asking. Uninstalling
-; removes the task and the firewall rule and KEEPS %ProgramData%\PassMan
+; removes the task and the firewall rule and KEEPS %ProgramData%\SecretSpace
 ; Server, because that is where the vaults are.
 ;
 ; Silent install, e.g. for testing:
-;     PassMan-Server-Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /HOST=0.0.0.0 /PORT=8787
+;     SecretSpace-Server-Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /HOST=0.0.0.0 /PORT=8787
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -30,21 +30,21 @@
 ; Never change AppId: it is how an upgrade finds the copy it replaces. It is
 ; not the app's AppId, so the two never replace each other.
 AppId={{6C1E2B7A-5F3D-4C8E-9A41-2D7B0E93F615}
-AppName=PassMan Server
+AppName=SecretSpace Server
 AppVersion={#AppVersion}
-AppVerName=PassMan Server {#AppVersion}
+AppVerName=SecretSpace Server {#AppVersion}
 VersionInfoVersion={#AppVersion}
-DefaultDirName={autopf}\PassMan Server
+DefaultDirName={autopf}\SecretSpace Server
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 MinVersion=10.0
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..
-OutputBaseFilename=PassMan-Server-Installer
+OutputBaseFilename=SecretSpace-Server-Installer
 SetupIconFile=..\server\PassMan-logo.ico
 UninstallDisplayIcon={app}\PassMan-Server.exe
-UninstallDisplayName=PassMan Server
+UninstallDisplayName=SecretSpace Server
 WizardStyle=modern
 Compression=lzma2
 SolidCompression=yes
@@ -52,15 +52,17 @@ SolidCompression=yes
 [InstallDelete]
 ; An upgrade must not leave the previous version's libraries behind.
 Type: filesandordirs; Name: "{app}\_internal"
+; Nor the Start Menu folder of the name before SecretSpace.
+Type: filesandordirs; Name: "{autoprograms}\PassMan Server"
 
 [Files]
 Source: "..\build\server\PassMan-Server\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\PassMan Server\Change network or port"; Filename: "{app}\PassMan-Server-Setup.exe"; Parameters: "--pause setup"
-Name: "{autoprograms}\PassMan Server\Show the token"; Filename: "{app}\PassMan-Server-Setup.exe"; Parameters: "--pause show-token"
-Name: "{autoprograms}\PassMan Server\Replace the token"; Filename: "{app}\PassMan-Server-Setup.exe"; Parameters: "--pause new-token"
-Name: "{autoprograms}\PassMan Server\Server log"; Filename: "{commonappdata}\PassMan Server\logs\server.log"
+Name: "{autoprograms}\SecretSpace Server\Change network or port"; Filename: "{app}\PassMan-Server-Setup.exe"; Parameters: "--pause setup"
+Name: "{autoprograms}\SecretSpace Server\Show the token"; Filename: "{app}\PassMan-Server-Setup.exe"; Parameters: "--pause show-token"
+Name: "{autoprograms}\SecretSpace Server\Replace the token"; Filename: "{app}\PassMan-Server-Setup.exe"; Parameters: "--pause new-token"
+Name: "{autoprograms}\SecretSpace Server\Server log"; Filename: "{commonappdata}\PassMan Server\logs\server.log"
 
 [Run]
 ; Upgrade: same network and port, task re-pointed at this copy, restarted.

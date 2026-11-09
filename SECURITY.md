@@ -1,6 +1,6 @@
 # Security policy
 
-PassMan keeps passwords, so security reports are welcome and taken seriously.
+SecretSpace keeps passwords, so security reports are welcome and taken seriously.
 
 ## Reporting a vulnerability
 

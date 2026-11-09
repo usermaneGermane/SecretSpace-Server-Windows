@@ -10,7 +10,7 @@ PassMan-Server-Setup.exe -- changes the Windows server's settings.
 It installs nothing and unpacks nothing: it rewrites
 %ProgramData%\\PassMan Server\\sync.env, replaces the firewall rule and the
 startup task, and restarts the server. Installing and upgrading the program
-is PassMan-Server-Installer.exe's job, which runs this once at the end.
+is SecretSpace-Server-Installer.exe's job, which runs this once at the end.
 
 Every command needs administrator rights; started without them, it asks
 Windows (the UAC prompt) to run it elevated, in a new window.

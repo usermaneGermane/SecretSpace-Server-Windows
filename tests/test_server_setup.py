@@ -641,11 +641,11 @@ def test_bind_without_retry_fails_at_once(monkeypatch):
 def test_the_task_runs_the_server_not_the_setup_program():
     """Run from PassMan-Server-Setup.exe, the task must still start
     PassMan-Server.exe beside it -- never the setup program itself."""
-    setup = os.path.join("C:\\Program Files", "PassMan Server",
+    setup = os.path.join("C:\\Program Files", "SecretSpace Server",
                          "PassMan-Server-Setup.exe")
     program, prefix = passman_setup.server_command(frozen=True,
                                                    executable=setup)
-    assert program == os.path.join("C:\\Program Files", "PassMan Server",
+    assert program == os.path.join("C:\\Program Files", "SecretSpace Server",
                                    "PassMan-Server.exe")
     assert prefix == []
 

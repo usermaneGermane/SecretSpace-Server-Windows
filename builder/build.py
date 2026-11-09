@@ -1,5 +1,5 @@
 """
-Build PassMan-Server-Installer.exe from the source, after checking every
+Build SecretSpace-Server-Installer.exe from the source, after checking every
 prerequisite:
 
     py builder\\build.py                      check, then build
@@ -8,8 +8,8 @@ prerequisite:
 The server is standard library only, so the build needs Python, PyInstaller
 and Inno Setup 6 and nothing else. Everything here is plain functions over
 an injectable command runner, so the tests can check every decision without
-starting a single process. The app (PassMan-Client-Installer.exe) is built
-from its own repository, PassMan-Client-Windows.
+starting a single process. The app (SecretSpace-Client-Installer.exe) is built
+from its own repository, SecretSpace-Client-Windows.
 """
 
 import os
@@ -28,7 +28,7 @@ REQUIRED_FILES = (
     os.path.join("server", "version.py"),
     os.path.join("server", "build_version.py"),
     os.path.join("server", "PassMan-logo.ico"),
-    os.path.join("installer", "PassMan-Server.iss"),
+    os.path.join("installer", "SecretSpace-Server.iss"),
 )
 
 #: winget packages for what pip cannot install.
@@ -230,9 +230,12 @@ def remove_previous(project: str) -> None:
     """Delete the old outputs first, so a failed build cannot look like a
     successful one because last time's files are still there."""
     import shutil
-    path = os.path.join(project, "PassMan-Server-Installer.exe")
-    if os.path.exists(path):
-        os.remove(path)
+    # PassMan-Server-Installer.exe is the name from before the rename to
+    # SecretSpace: removed too, so it cannot pass for a current build.
+    for name in ("SecretSpace-Server-Installer.exe", "PassMan-Server-Installer.exe"):
+        path = os.path.join(project, name)
+        if os.path.exists(path):
+            os.remove(path)
     folder = os.path.join(project, "build", "server", "PassMan-Server")
     if os.path.isdir(folder):
         shutil.rmtree(folder)
@@ -250,10 +253,10 @@ def build_steps(project: str, py: "Python", iscc: str, version: str) -> list:
                    os.path.join(project, "server", "PassMan-Server.spec")],
          os.path.join(project, "build", "server", "PassMan-Server",
                       "PassMan-Server.exe")),
-        ("Packing PassMan-Server-Installer.exe",
+        ("Packing SecretSpace-Server-Installer.exe",
          [iscc, "/Q", f"/DAppVersion={version}",
-          os.path.join(project, "installer", "PassMan-Server.iss")],
-         os.path.join(project, "PassMan-Server-Installer.exe")),
+          os.path.join(project, "installer", "SecretSpace-Server.iss")],
+         os.path.join(project, "SecretSpace-Server-Installer.exe")),
     ]
 
 
@@ -261,7 +264,7 @@ def build(project: str, py: "Python", iscc: str, log=print, runner=run,
           exists=os.path.isfile) -> bool:
     """Run the build, logging as it goes. True when every output exists."""
     version = app_version(project)
-    log(f"PassMan Server {version}")
+    log(f"SecretSpace Server {version}")
     remove_previous(project)
     for label, cmd, product in build_steps(project, py, iscc, version):
         log("")
@@ -273,7 +276,7 @@ def build(project: str, py: "Python", iscc: str, log=print, runner=run,
                 "The messages above give the reason.")
             return False
     log("")
-    log(f"DONE. Version {version}: PassMan-Server-Installer.exe")
+    log(f"DONE. Version {version}: SecretSpace-Server-Installer.exe")
     return True
 
 

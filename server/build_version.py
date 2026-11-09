@@ -15,7 +15,7 @@ from PyInstaller.utils.win32.versioninfo import (
 from version import __version__
 
 
-def version_info(description="PassMan sync server",
+def version_info(description="SecretSpace sync server",
                  filename="PassMan-Server.exe") -> VSVersionInfo:
     numbers = tuple(int(part) for part in __version__.split(".")) + (0,)
     return VSVersionInfo(
@@ -26,7 +26,7 @@ def version_info(description="PassMan sync server",
                 StringStruct("FileVersion", __version__),
                 StringStruct("InternalName", filename[:-4]),
                 StringStruct("OriginalFilename", filename),
-                StringStruct("ProductName", "PassMan Server"),
+                StringStruct("ProductName", "SecretSpace Server"),
                 StringStruct("ProductVersion", __version__),
             ])]),
             VarFileInfo([VarStruct("Translation", [0x0409, 1200])]),
