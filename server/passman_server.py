@@ -3,15 +3,19 @@
 SecretSpace sync server -- a store for encrypted vault blobs.
 
 What it is NOT: it cannot read your passwords. The client encrypts the vault
-with your master password before it ever reaches the network, so this process
-holds AES-256-GCM ciphertext it has no key for. It never sees the master
-password, and there is deliberately nothing here that could -- no user
-accounts, no password reset, no "forgot my vault".
+before it ever reaches the network, so this process holds AES-256-GCM
+ciphertext it has no key for. It never sees a master password, a Secret Key or
+a vault key, and there is deliberately nothing here that could -- no password
+reset, no "forgot my vault".
 
-What it does: stores one blob per user, stamps it with a revision number, and
+What it does: stores vault blobs, stamps each with a revision number, and
 refuses a write that was computed against an older revision. That refusal is
 the whole point. Without it, two PCs that both edited offline would silently
 overwrite each other; with it, the second one is told to merge first.
+
+Two APIs side by side: /vault/<user> with one shared token for SecretSpace
+2.x clients, and /v2/ with accounts and sessions for SecretSpace 3 (see the
+API v2 section below).
 
 Standard library only, so it runs on any box with Python 3 and nothing to
 install. See README.md for deployment.
@@ -28,6 +32,7 @@ import hashlib
 import argparse
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -189,6 +194,362 @@ class Store:
             pass
 
 
+# ===========================================================================
+# SecretSpace 3 accounts: API v2
+# ===========================================================================
+#
+# Everything above serves 2.x clients: one blob per username, one shared
+# token. 3.0 clients get accounts instead. The server still never sees a
+# master password, a Secret Key or a vault key:
+#
+# - an account is the client's Login Key (hashed here), its public key, and
+#   its keyset and recovery copy, both sealed on the device;
+# - a vault is a blob exactly like a 2.x one, kept by the same Store with the
+#   same revision / If-Match / history rules, plus who may use it.
+#
+# It all lives in <store>/_v2/. A 2.x username cannot start with "_", so no
+# 2.x vault folder can ever collide with it.
+
+V2_DIR = "_v2"
+
+#: How long a login lasts.
+SESSION_SECONDS = 12 * 3600
+
+#: The Login Key is 32 bytes from HKDF (password + Secret Key), already far
+#: beyond guessing, so the stored hash needs no slow KDF of its own -- scrypt
+#: with modest cost only makes a stolen accounts folder useless to replay.
+#: It is in the standard library, which keeps the server free of packages.
+LOGIN_KEY_LEN = 32
+SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 14, 8, 1
+
+#: Wrong logins per username before it is paused, the window they are counted
+#: in, and the pause. The Login Key cannot be guessed; this is about noise.
+MAX_LOGIN_FAILURES = 10
+FAILURE_WINDOW = 15 * 60
+LOCKOUT_SECONDS = 60
+
+#: The client's Argon2id default, for the made-up answer to a pre-login for an
+#: account that does not exist (see AccountStore.prelogin).
+DEFAULT_KDF = {"memory_kib": 65536, "passes": 3, "lanes": 1}
+
+VAULT_ID = re.compile(r"^[0-9a-f]{32}$")
+ROLES_THAT_WRITE = ("owner", "editor")
+
+#: The account files' layouts, from the client (account_crypto.py).
+_KEYSET_MAGIC = b"PMK3"
+_KEYSET_HEADER = 4 + 1 + 1 + 4 + 1 + 1 + 16     # magic ver kdf mem passes lanes salt
+_VAULT_MAGIC = b"PMV3"
+
+
+class V2Error(Exception):
+    """A refusal with its HTTP status and the message the user sees."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def _unb64(text, what: str, length: int = None) -> bytes:
+    try:
+        raw = base64.b64decode(str(text).encode("ascii"), validate=True)
+    except Exception:
+        raise V2Error(400, f"{what} is not valid base64.") from None
+    if length is not None and len(raw) != length:
+        raise V2Error(400, f"{what} has the wrong length.")
+    return raw
+
+
+def _b64(raw: bytes) -> str:
+    return base64.b64encode(raw).decode("ascii")
+
+
+def keyset_kdf(sealed: str, recovery: bool = False) -> dict:
+    """
+    The key-derivation header of a sealed keyset (what a new device needs to
+    turn a master password into the key that opens it). The rest is
+    ciphertext this server cannot and does not need to read.
+    """
+    raw = _unb64(sealed, "The recovery copy" if recovery else "The keyset")
+    if len(raw) < _KEYSET_HEADER + 12 + 16 or raw[:4] != _KEYSET_MAGIC:
+        raise V2Error(400, "That is not a SecretSpace 3 keyset.")
+    kdf = raw[5]
+    if kdf != (0 if recovery else 1):
+        raise V2Error(400, "The keyset and its recovery copy are swapped.")
+    memory_kib = int.from_bytes(raw[6:10], "big")
+    return {"memory_kib": memory_kib, "passes": raw[10], "lanes": raw[11],
+            "salt": _b64(raw[12:28])}
+
+
+def hash_login_key(login_key: bytes, salt: bytes = None) -> dict:
+    salt = salt or os.urandom(16)
+    digest = hashlib.scrypt(login_key, salt=salt, n=SCRYPT_N, r=SCRYPT_R,
+                            p=SCRYPT_P, dklen=32)
+    return {"salt": _b64(salt), "hash": _b64(digest), "n": SCRYPT_N,
+            "r": SCRYPT_R, "p": SCRYPT_P}
+
+
+def login_key_matches(login_key: bytes, stored: dict) -> bool:
+    try:
+        digest = hashlib.scrypt(login_key, salt=base64.b64decode(stored["salt"]),
+                                n=int(stored["n"]), r=int(stored["r"]),
+                                p=int(stored["p"]), dklen=32)
+        return hmac.compare_digest(digest, base64.b64decode(stored["hash"]))
+    except Exception:
+        return False
+
+
+class AccountStore:
+    """Accounts, sessions and vaults of API v2, under <store>/_v2."""
+
+    def __init__(self, store_root: str):
+        self.root = os.path.join(os.path.abspath(store_root), V2_DIR)
+        self.vaults = Store(os.path.join(self.root, "vaults"))
+        self._failures = {}               # username (lower) -> [times]
+        self._failure_lock = threading.Lock()
+
+    # -- files --------------------------------------------------------------
+    def _account_path(self, username: str) -> str:
+        # One file per name regardless of case: "Alice" and "alice" are one
+        # account, as they are one folder on Windows.
+        return os.path.join(self.root, "accounts", username.lower() + ".json")
+
+    def _members_path(self, vault_id: str) -> str:
+        return os.path.join(self.vaults.root, vault_id, "members.json")
+
+    @staticmethod
+    def _read_json(path: str):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return None
+
+    @staticmethod
+    def _write_json(path: str, data) -> None:
+        write_atomic(path, json.dumps(data, indent=2, sort_keys=True).encode("utf-8"))
+
+    def account(self, username: str):
+        """The stored account, or None. Matches the name exactly."""
+        if not valid_username(username):
+            return None
+        record = self._read_json(self._account_path(username))
+        if not record or record.get("username") != username:
+            return None
+        return record
+
+    def _server_key(self) -> bytes:
+        path = os.path.join(self.root, "server.key")
+        try:
+            with open(path, "rb") as f:
+                key = f.read()
+            if len(key) == 32:
+                return key
+        except OSError:
+            pass
+        key = os.urandom(32)
+        write_atomic(path, key)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return key
+
+    # -- pre-login ------------------------------------------------------------
+    def prelogin(self, username: str) -> dict:
+        """
+        How a device turns this account's master password into keys: the
+        Argon2id salt and cost from the stored keyset. For a name with no
+        account the answer is made up -- a salt derived from a key only this
+        server has, so it is the same on every ask -- and the login then simply
+        fails. That way the answer says nothing about which names exist.
+        """
+        if not valid_username(username):
+            raise V2Error(400, "Not a valid username.")
+        record = self._read_json(self._account_path(username))
+        if record:
+            return {"username": record["username"], "kdf": record["kdf"]}
+        salt = hmac.new(self._server_key(), b"prelogin|" + username.lower().encode(),
+                        hashlib.sha256).digest()[:16]
+        return {"username": username, "kdf": {**DEFAULT_KDF, "salt": _b64(salt)}}
+
+    # -- sign-up ------------------------------------------------------------
+    def create_account(self, body: dict) -> dict:
+        username = body.get("username")
+        if not isinstance(username, str) or not valid_username(username):
+            raise V2Error(400, "Not a valid username.")
+        login_key = _unb64(body.get("login_key"), "The login key", LOGIN_KEY_LEN)
+        kdf = keyset_kdf(body.get("keyset"))
+        keyset_kdf(body.get("recovery"), recovery=True)
+        public_key = _unb64(body.get("public_key"), "The public key", 32)
+        vault_id = body.get("personal_vault")
+        if not isinstance(vault_id, str) or not VAULT_ID.match(vault_id):
+            raise V2Error(400, "The personal vault id is not valid.")
+
+        with _lock:
+            if self._read_json(self._account_path(username)) is not None:
+                raise V2Error(409, f"There is already an account called "
+                                   f"“{username}” on this server.")
+            if os.path.exists(os.path.join(self.vaults.root, vault_id)):
+                raise V2Error(409, "That vault id is already in use.")
+            self._write_json(self._members_path(vault_id), {
+                "kind": "personal", "created_at": utc_now(),
+                "members": {username: {"role": "owner"}}})
+            self._write_json(self._account_path(username), {
+                "username": username,
+                "created_at": utc_now(),
+                "login": hash_login_key(login_key),
+                "public_key": _b64(public_key),
+                "keyset": body["keyset"],
+                "recovery": body["recovery"],
+                "kdf": kdf,
+                "personal_vault": vault_id,
+                "disabled": False,
+            })
+        return {"username": username, "personal_vault": vault_id}
+
+    # -- logging in ---------------------------------------------------------
+    def _paused(self, username: str) -> bool:
+        now = time.time()
+        with self._failure_lock:
+            recent = [t for t in self._failures.get(username.lower(), [])
+                      if now - t < FAILURE_WINDOW]
+            self._failures[username.lower()] = recent
+            return (len(recent) >= MAX_LOGIN_FAILURES
+                    and now - recent[-1] < LOCKOUT_SECONDS)
+
+    def _failed(self, username: str) -> None:
+        with self._failure_lock:
+            self._failures.setdefault(username.lower(), []).append(time.time())
+
+    def login(self, body: dict) -> dict:
+        username = body.get("username")
+        if not isinstance(username, str) or not valid_username(username):
+            raise V2Error(400, "Not a valid username.")
+        login_key = _unb64(body.get("login_key"), "The login key", LOGIN_KEY_LEN)
+        if self._paused(username):
+            raise V2Error(429, "Too many wrong attempts for this account. "
+                               "Wait a minute, then try again.")
+        record = self.account(username)
+        # Hash even when there is no such account, so the answer takes as long
+        # either way and its timing does not tell which names exist.
+        stored = record["login"] if record else hash_login_key(b"\0" * 32)
+        ok = login_key_matches(login_key, stored) and record is not None
+        if not ok or record.get("disabled"):
+            self._failed(username)
+            raise V2Error(401, "Wrong username, master password or Secret Key.")
+        with self._failure_lock:
+            self._failures.pop(username.lower(), None)
+        token = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+        self._write_json(self._session_path(token), {
+            "username": username, "expires": time.time() + SESSION_SECONDS})
+        self._drop_expired_sessions()
+        return {"session": token, "username": username,
+                "expires_in": SESSION_SECONDS}
+
+    # -- sessions -----------------------------------------------------------
+    def _session_path(self, token: str) -> str:
+        # Stored under its hash: a copy of this folder logs nobody in.
+        name = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        return os.path.join(self.root, "sessions", name + ".json")
+
+    def session_user(self, token: str):
+        """The username a session token belongs to, or None."""
+        if not token or len(token) > 200:
+            return None
+        try:
+            session = self._read_json(self._session_path(token))
+        except (OSError, ValueError):
+            return None
+        if not session or session.get("expires", 0) < time.time():
+            return None
+        record = self.account(session.get("username", ""))
+        if not record or record.get("disabled"):
+            return None
+        return record["username"]
+
+    def logout(self, token: str) -> None:
+        try:
+            os.remove(self._session_path(token))
+        except OSError:
+            pass
+
+    def _drop_expired_sessions(self, keep_user: str = None, keep_token: str = None,
+                               user_to_end: str = None) -> None:
+        """Remove expired sessions; with ``user_to_end``, also every session
+        of that user except ``keep_token``'s."""
+        folder = os.path.join(self.root, "sessions")
+        keep = os.path.basename(self._session_path(keep_token)) if keep_token else None
+        now = time.time()
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return
+        for name in names:
+            path = os.path.join(folder, name)
+            try:
+                session = self._read_json(path) or {}
+            except (OSError, ValueError):
+                session = {}
+            ending = (user_to_end is not None and name != keep
+                      and session.get("username") == user_to_end)
+            if ending or session.get("expires", 0) < now:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+    # -- the account itself -------------------------------------------------
+    def me(self, username: str) -> dict:
+        record = self.account(username)
+        vaults = []
+        vault_id = record["personal_vault"]
+        members = self._read_json(self._members_path(vault_id)) or {}
+        meta = self.vaults.meta(vault_id)
+        vaults.append({"id": vault_id, "kind": members.get("kind", "personal"),
+                       "role": members.get("members", {}).get(username, {})
+                                      .get("role", "owner"),
+                       "revision": meta["revision"],
+                       "key_generation": meta.get("key_generation", 0)})
+        return {"username": record["username"], "public_key": record["public_key"],
+                "keyset": record["keyset"], "recovery": record["recovery"],
+                "kdf": record["kdf"], "personal_vault": vault_id,
+                "vaults": vaults}
+
+    def change_keyset(self, username: str, body: dict, keep_token: str) -> None:
+        """
+        A new master password: the same keys under a new seal, and the Login
+        Key that goes with it. Every other session of the account ends -- a
+        password is changed when it may have leaked.
+        """
+        login_key = _unb64(body.get("login_key"), "The login key", LOGIN_KEY_LEN)
+        kdf = keyset_kdf(body.get("keyset"))
+        with _lock:
+            record = self.account(username)
+            record.update({"login": hash_login_key(login_key),
+                           "keyset": body["keyset"], "kdf": kdf,
+                           "password_changed_at": utc_now()})
+            self._write_json(self._account_path(username), record)
+        self._drop_expired_sessions(user_to_end=username, keep_token=keep_token)
+
+    # -- vaults -------------------------------------------------------------
+    def role(self, username: str, vault_id: str):
+        """This user's role in the vault, or None (also for no such vault)."""
+        if not VAULT_ID.match(vault_id or ""):
+            return None
+        members = self._read_json(self._members_path(vault_id)) or {}
+        member = members.get("members", {}).get(username)
+        return member.get("role") if member else None
+
+
+def check_vault_blob(raw: bytes, vault_id: str) -> None:
+    """A v2 vault blob must be PMV3 and name the vault it is stored as, so a
+    confused client cannot put one vault's file in another's place."""
+    if raw[:4] != _VAULT_MAGIC or len(raw) < 4 + 1 + 16 + 4 + 12 + 16:
+        raise V2Error(400, "That is not a SecretSpace 3 vault.")
+    if raw[5:21] != bytes.fromhex(vault_id):
+        raise V2Error(400, "That vault file belongs to another vault.")
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "PassManSync/1.0"
 
@@ -246,7 +607,10 @@ class Handler(BaseHTTPRequestHandler):
     # -- routes -----------------------------------------------------------
     def do_GET(self):
         if self.path.split("?")[0] == "/health":
-            return self._send(200, {"ok": True, "service": "passman-sync"})
+            return self._send(200, {"ok": True, "service": "passman-sync",
+                                    "api": [1, 2]})
+        if self._is_v2():
+            return self._v2("GET")
 
         if not self._authorised():
             return self._error(401, "Bad or missing token.")
@@ -254,28 +618,64 @@ class Handler(BaseHTTPRequestHandler):
         user, tail = self._user_from_path()
         if user is None:
             return self._error(404, "No such endpoint.")
-
-        meta = self.server.store.meta(user)
-        if tail == "meta":
-            return self._send(200, meta)
-
-        if not self.server.store.exists(user):
-            # Not an error: it is how a client learns it is the first to push.
-            return self._send(200, {**meta, "blob": None})
-        try:
-            blob = self.server.store.read(user)
-        except OSError as e:
-            return self._error(500, f"Could not read the stored vault: {e}")
-        return self._send(200, {**meta, "blob": blob.decode("ascii")})
+        return self._send_blob(self.server.store, user, tail)
 
     def do_PUT(self):
+        if self._is_v2():
+            return self._v2("PUT")
         if not self._authorised():
             return self._error(401, "Bad or missing token.")
 
         user, tail = self._user_from_path()
         if user is None or tail:
             return self._error(404, "No such endpoint.")
+        return self._store_blob(self.server.store, user)
 
+    def do_POST(self):
+        if self._is_v2():
+            return self._v2("POST")
+        # 2.x never used POST: answer as before, when there was no do_POST.
+        self.send_error(501, "Unsupported method ('POST')")
+
+    # -- one blob, for 2.x users and v2 vaults alike ------------------------
+    def _send_blob(self, store, name, tail):
+        meta = store.meta(name)
+        if tail == "meta":
+            return self._send(200, meta)
+
+        if not store.exists(name):
+            # Not an error: it is how a client learns it is the first to push.
+            return self._send(200, {**meta, "blob": None})
+        try:
+            blob = store.read(name)
+        except OSError as e:
+            return self._error(500, f"Could not read the stored vault: {e}")
+        return self._send(200, {**meta, "blob": blob.decode("ascii")})
+
+    def _read_body(self):
+        """The request's JSON body, or (None, already answered)."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self._error(400, "Bad Content-Length.")
+            return None
+        if length <= 0:
+            self._error(400, "Empty body.")
+            return None
+        if length > MAX_BODY:
+            self._error(413, "That is far larger than a vault.")
+            return None
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception:
+            self._error(400, "Body must be JSON.")
+            return None
+        if not isinstance(payload, dict):
+            self._error(400, "Body must be a JSON object.")
+            return None
+        return payload
+
+    def _store_blob(self, store, name, check=None):
         try:
             length = int(self.headers.get("Content-Length", 0))
         except ValueError:
@@ -300,6 +700,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(400, "Blob is not valid base64.")
         if len(raw) < MIN_BLOB_BYTES:
             return self._error(400, "Blob is too short to be a vault.")
+        if check is not None:
+            try:
+                check(raw)
+            except V2Error as e:
+                return self._error(e.status, str(e))
 
         # Optional, and absent from clients older than password-change
         # support; the store then keeps what it had.
@@ -317,7 +722,7 @@ class Handler(BaseHTTPRequestHandler):
         # One writer at a time: check-then-write has to be atomic, or two
         # simultaneous pushes could both pass the revision check.
         with _lock:
-            current = int(self.server.store.meta(user)["revision"])
+            current = int(store.meta(name)["revision"])
             expected = self.headers.get("If-Match", "").strip().strip('"')
 
             if not expected:
@@ -336,12 +741,93 @@ class Handler(BaseHTTPRequestHandler):
                          f"Pull and merge again.")
 
             try:
-                meta = self.server.store.write(user, blob, generation,
-                                               drop_history)
+                meta = store.write(name, blob, generation, drop_history)
             except OSError as e:
                 return self._error(500, f"Could not store the vault: {e}")
 
         return self._send(200, meta)
+
+    # -- API v2: SecretSpace 3 accounts -------------------------------------
+    def _is_v2(self) -> bool:
+        return self.path.split("?")[0].startswith("/v2/")
+
+    @property
+    def accounts(self) -> AccountStore:
+        # Made on first use from the 2.x store, so a server set up in code
+        # (the tests, the clients' test copies) gets v2 without extra wiring.
+        found = getattr(self.server, "accounts", None)
+        if found is None:
+            found = AccountStore(self.server.store.root)
+            self.server.accounts = found
+        return found
+
+    def _bearer(self) -> str:
+        header = self.headers.get("Authorization", "")
+        return header[len("Bearer "):] if header.startswith("Bearer ") else ""
+
+    def _v2(self, method: str):
+        parts = [p for p in self.path.split("?")[0].split("/") if p][1:]
+        try:
+            return self._v2_route(method, parts)
+        except V2Error as e:
+            return self._error(e.status, str(e))
+
+    def _v2_route(self, method, parts):
+        accounts = self.accounts
+        route = (method, parts[0] if parts else "", len(parts))
+
+        # -- no login needed ---------------------------------------------------
+        if route == ("GET", "prelogin", 2):
+            return self._send(200, accounts.prelogin(parts[1]))
+        if route == ("POST", "login", 1):
+            body = self._read_body()
+            return None if body is None else self._send(200, accounts.login(body))
+        if route == ("POST", "accounts", 1):
+            # The sign-up code is the server's token: whoever was given it may
+            # make an account here, as whoever has it may sync a 2.x vault.
+            if not self._authorised():
+                return self._error(401, "Bad or missing sign-up code (the "
+                                        "server's token).")
+            body = self._read_body()
+            if body is None:
+                return None
+            return self._send(201, accounts.create_account(body))
+
+        # -- everything else needs a session -------------------------------
+        token = self._bearer()
+        username = accounts.session_user(token)
+        if username is None:
+            return self._error(401, "Not logged in, or the login has expired.")
+
+        if route == ("GET", "me", 1):
+            return self._send(200, accounts.me(username))
+        if route == ("POST", "logout", 1):
+            accounts.logout(token)
+            return self._send(200, {})
+        if route == ("PUT", "me", 2) and parts[1] == "keyset":
+            body = self._read_body()
+            if body is None:
+                return None
+            accounts.change_keyset(username, body, keep_token=token)
+            return self._send(200, {})
+        if parts and parts[0] == "vaults" and len(parts) in (2, 3):
+            vault_id = parts[1]
+            tail = parts[2] if len(parts) == 3 else ""
+            role = accounts.role(username, vault_id)
+            # Not a member and no such vault answer alike, so a guess at an
+            # id learns nothing.
+            if role is None or tail not in ("", "meta"):
+                return self._error(404, "No such vault.")
+            if method == "GET":
+                return self._send_blob(accounts.vaults, vault_id, tail)
+            if method == "PUT" and not tail:
+                if role not in ROLES_THAT_WRITE:
+                    return self._error(403, "You can read this vault but not "
+                                            "change it.")
+                return self._store_blob(
+                    accounts.vaults, vault_id,
+                    check=lambda raw: check_vault_blob(raw, vault_id))
+        return self._error(404, "No such endpoint.")
 
 
 def load_token(args) -> str:
@@ -455,7 +941,6 @@ def bind(host, port, retry_seconds=0, sleep=None):
     yet -- a network that comes up after the server at boot -- is retried
     rather than ending the server; anything else still fails at once.
     """
-    import time
     sleep = sleep or time.sleep
     warned = False
     while True:
