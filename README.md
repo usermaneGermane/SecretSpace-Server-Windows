@@ -294,6 +294,36 @@ The server replies:
 A first push may omit `If-Match`. `If-Match: *` overwrites whatever is there,
 which the client never sends — it exists for recovering by hand.
 
+### API v2: SecretSpace 3 accounts (test version)
+
+Server **2.0.0-alpha** adds accounts for the SecretSpace 3 test versions
+(Windows 3.0.0-alpha.3, Linux 1.0.0-alpha.3). It sits beside the routes
+above, which stay exactly as they are for 2.x clients. The server still never
+sees a master password, a Secret Key or a vault key: an account is the
+client's **Login Key** (stored as a salted scrypt hash), its public key, and
+its keyset and recovery copy, both sealed on the device. A vault is a blob
+like a 2.x one, with the same revision, `If-Match` and history rules.
+
+| Route | Method | Who | Purpose |
+| --- | --- | --- | --- |
+| `/v2/prelogin/<user>` | GET | anyone | the Argon2id salt and cost a device needs to turn the master password into keys. A name with no account gets a made-up, stable answer, so this says nothing about which names exist |
+| `/v2/accounts` | POST | the server's **token**, as the sign-up code | make an account (and its personal vault) |
+| `/v2/login` | POST | anyone | Login Key → a session, valid 12 hours. After 10 wrong tries in 15 minutes the name is paused for a minute |
+| `/v2/logout` | POST | session | end this session |
+| `/v2/me` | GET | session | the account: public key, keyset, recovery copy, its vaults |
+| `/v2/me/keyset` | PUT | session | a new master password: new keyset and Login Key; every other session of the account ends |
+| `/v2/vaults/<id>` | GET / PUT | session, member | the vault blob, as `/vault/<user>` (PUT: owner or editor; it must be a PMV3 file naming this vault) |
+| `/v2/vaults/<id>/meta` | GET | session, member | its metadata |
+
+Sessions are sent as `Authorization: Bearer <session>`. The server's token
+is not a session and opens no account; a session opens no 2.x vault. A vault
+you are not a member of answers 404, the same as one that does not exist.
+
+Everything v2 keeps is in `_v2/` inside the vault store (a 2.x name cannot
+start with `_`), so backing up the store backs it up too: `accounts/`,
+`sessions/` (stored hashed), `vaults/<id>/` and `server.key` (for the
+made-up pre-login answers).
+
 ## What it keeps
 
 Inside `C:\ProgramData\SecretSpace Server\store`:

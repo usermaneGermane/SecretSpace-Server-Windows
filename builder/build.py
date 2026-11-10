@@ -241,6 +241,19 @@ def remove_previous(project: str) -> None:
         shutil.rmtree(folder)
 
 
+def file_version(version: str) -> str:
+    """
+    The four plain numbers Windows wants (Inno's VersionInfoVersion):
+    '2.0.0-alpha.1' -> '2.0.0.1', '1.2.0' -> '1.2.0.0'. The same rule as
+    version.file_version, which the exes' own version resource uses.
+    """
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-(?:alpha|beta|rc)\.(\d+))?",
+                     version)
+    if not m:
+        raise ValueError(f"Not a SecretSpace version: {version!r}")
+    return ".".join(g or "0" for g in m.groups())
+
+
 def build_steps(project: str, py: "Python", iscc: str, version: str) -> list:
     """The commands, as (label, cmd, the file it must produce): the server's
     folder build, then its installer."""
@@ -255,6 +268,7 @@ def build_steps(project: str, py: "Python", iscc: str, version: str) -> list:
                       "PassMan-Server.exe")),
         ("Packing SecretSpace-Server-Installer.exe",
          [iscc, "/Q", f"/DAppVersion={version}",
+          f"/DFileVersion={file_version(version)}",
           os.path.join(project, "installer", "SecretSpace-Server.iss")],
          os.path.join(project, "SecretSpace-Server-Installer.exe")),
     ]

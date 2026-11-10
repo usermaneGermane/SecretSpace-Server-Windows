@@ -122,7 +122,8 @@ def test_an_incomplete_folder_is_reported(tmp_path):
 # --- versions and paths ----------------------------------------------------
 def test_version_is_read_from_version_py():
     import re
-    assert re.fullmatch(r"\d+\.\d+\.\d+", build.app_version(PROJECT))
+    assert re.fullmatch(r"\d+\.\d+\.\d+(-(alpha|beta|rc)\.\d+)?",
+                        build.app_version(PROJECT))
 
 
 def test_iscc_found_in_the_per_user_location(monkeypatch):
@@ -153,7 +154,7 @@ def test_build_runs_the_steps_in_order(project):
 
 def test_only_the_server_is_built():
     """The app has its own repository and its own build."""
-    steps = build.build_steps("P", build.Python(["py"], "3", "p"), "iscc", "1")
+    steps = build.build_steps("P", build.Python(["py"], "3", "p"), "iscc", "1.0.0")
     products = [os.path.basename(product) for _, _, product in steps]
     assert products == ["PassMan-Server.exe", "SecretSpace-Server-Installer.exe"]
 
@@ -180,3 +181,25 @@ def test_a_missing_product_counts_as_failure(project):
                      log=lambda s: None, runner=FakeRunner(),
                      exists=lambda p: False)
     assert not ok
+
+
+@pytest.mark.parametrize("text, numbers", [
+    ("1.2.0", "1.2.0.0"), ("2.0.0-alpha.1", "2.0.0.1"), ("2.0.0", "2.0.0.0"),
+    ("2.0.0-rc.3", "2.0.0.3")])
+def test_file_version(text, numbers):
+    assert build.file_version(text) == numbers
+
+
+def test_file_version_refuses_junk():
+    with pytest.raises(ValueError):
+        build.file_version("2.0.0-dev")
+
+
+def test_the_installer_gets_a_plain_file_version():
+    """Inno's VersionInfoVersion takes four numbers only; a test version's
+    own name (2.0.0-alpha.1) would stop the installer from compiling."""
+    steps = build.build_steps("P", build.Python(["py"], "3", "p"), "iscc",
+                              "2.0.0-alpha.1")
+    cmd = steps[1][1]
+    assert "/DAppVersion=2.0.0-alpha.1" in cmd and "/DFileVersion=2.0.0.1" in cmd
+

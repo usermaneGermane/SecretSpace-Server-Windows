@@ -25,6 +25,11 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+; Four plain numbers: a test version's AppVersion (2.0.0-alpha.1) is not
+; one, so the builder passes 2.0.0.1 here as well.
+#ifndef FileVersion
+  #define FileVersion "0.0.0.0"
+#endif
 
 [Setup]
 ; Never change AppId: it is how an upgrade finds the copy it replaces. It is
@@ -33,7 +38,7 @@ AppId={{6C1E2B7A-5F3D-4C8E-9A41-2D7B0E93F615}
 AppName=SecretSpace Server
 AppVersion={#AppVersion}
 AppVerName=SecretSpace Server {#AppVersion}
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#FileVersion}
 DefaultDirName={autopf}\SecretSpace Server
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
