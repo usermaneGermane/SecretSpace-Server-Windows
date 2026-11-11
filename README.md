@@ -314,10 +314,25 @@ like a 2.x one, with the same revision, `If-Match` and history rules.
 | `/v2/me/keyset` | PUT | session | a new master password: new keyset and Login Key; every other session of the account ends |
 | `/v2/vaults/<id>` | GET / PUT | session, member | the vault blob, as `/vault/<user>` (PUT: owner or editor; it must be a PMV3 file naming this vault) |
 | `/v2/vaults/<id>/meta` | GET | session, member | its metadata |
+| `/v2/vaults` | POST | session | make a further vault, owned by the caller (**201**): `{id, name, wrapped_key}`. **400** for a bad id, name or key, **409** if the id is in use, **403** past 50 vaults |
+| `/v2/vaults/<id>/name` | PUT | session, owner | change the vault's name (not for the personal vault) |
+| `/v2/vaults/<id>` | DELETE | session, owner | delete the vault (not the personal one, which goes with the account) |
 
 Sessions are sent as `Authorization: Bearer <session>`. The server's token
 is not a session and opens no account; a session opens no 2.x vault. A vault
 you are not a member of answers 404, the same as one that does not exist.
+
+Server **2.0.0-alpha.2** lets an account hold **several vaults**: the
+personal one, which every account has, and up to **50** more (`MAX_VAULTS_PER_ACCOUNT`
+in `passman_server.py`). The client makes a vault's id and key. A vault's
+name arrives sealed under that key and the key arrives wrapped to the owner's
+public key, so the server can read neither; it only stores them and hands
+them back in `/v2/me`, where the personal vault comes first. A deleted vault is
+not erased: its folder is **moved** to `_v2\deleted\<id>-<date>` inside the
+store, so a vault deleted by mistake is not lost at once. Whoever runs the
+server may empty `_v2\deleted\` when sure. An
+account made by 2.0.0-alpha.1 needs no change. `/health` now also lists
+`"features": ["vaults"]`, so a client can tell whether a server has this.
 
 Everything v2 keeps is in `_v2/` inside the vault store (a 2.x name cannot
 start with `_`), so backing up the store backs it up too: `accounts/`,
