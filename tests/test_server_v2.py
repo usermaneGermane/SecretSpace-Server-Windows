@@ -143,7 +143,7 @@ def test_signup_makes_the_account_and_its_personal_vault(server, alice):
     assert me["personal_vault"] == alice.vault
     assert me["vaults"] == [{"id": alice.vault, "kind": "personal",
                              "role": "owner", "revision": 0,
-                             "key_generation": 0}]
+                             "key_generation": 0, "members": 1}]
 
 
 @pytest.mark.parametrize("name", ["alice", "Alice", "ALICE"])

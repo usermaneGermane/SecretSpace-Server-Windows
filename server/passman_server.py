@@ -33,6 +33,7 @@ import argparse
 import tempfile
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -233,9 +234,24 @@ LOCKOUT_SECONDS = 60
 DEFAULT_KDF = {"memory_kib": 65536, "passes": 3, "lanes": 1}
 
 VAULT_ID = re.compile(r"^[0-9a-f]{32}$")
+ROLES = ("owner", "editor", "reader")
 ROLES_THAT_WRITE = ("owner", "editor")
 
-#: Vaults an account may own besides its personal one. Whoever holds the
+#: People in one vault, and vaults one account may be in (its own and the
+#: ones shared with it). Both only keep a mistake or a prank from growing
+#: without end.
+MAX_MEMBERS_PER_VAULT = 50
+MAX_VAULTS_LISTED = 200
+
+#: The server's own record of what happened (who logged in, who uploaded,
+#: who was added or removed): one JSON object per line, only ever appended.
+#: A file that reaches this size is renamed to <name>.1 (replacing the
+#: previous .1) and a new one started.
+AUDIT_ROTATE_BYTES = 2 * 1024 * 1024
+#: Lines an owner is sent when asking for a vault's log.
+AUDIT_LINES_SENT = 200
+
+#: Vaults an account may make besides its personal one. Whoever holds the
 #: sign-up code can make an account; this keeps one from filling the disk
 #: with empty vaults.
 MAX_VAULTS_PER_ACCOUNT = 50
@@ -320,6 +336,7 @@ class AccountStore:
         self.vaults = Store(os.path.join(self.root, "vaults"))
         self._failures = {}               # username (lower) -> [times]
         self._failure_lock = threading.Lock()
+        self._audit_lock = threading.Lock()
 
     # -- files --------------------------------------------------------------
     def _account_path(self, username: str) -> str:
@@ -341,6 +358,51 @@ class AccountStore:
     @staticmethod
     def _write_json(path: str, data) -> None:
         write_atomic(path, json.dumps(data, indent=2, sort_keys=True).encode("utf-8"))
+
+    # -- the audit log ----------------------------------------------------------
+    def _audit_path(self, vault_id: str = None) -> str:
+        if vault_id is None:
+            return os.path.join(self.root, "logins.log")
+        return os.path.join(self.vaults.root, vault_id, "audit.log")
+
+    def audit(self, vault_id, event: str, by: str, address: str = "",
+              **details) -> None:
+        """
+        Append one line to a vault's log (``vault_id`` None: the log of
+        logins). Never raises: a full disk must not turn a finished upload
+        into an error -- the line is then simply missing.
+        """
+        line = {"at": utc_now(), "event": event, "by": by, "address": address}
+        line.update(details)
+        path = self._audit_path(vault_id)
+        try:
+            with self._audit_lock:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                try:
+                    if os.path.getsize(path) >= AUDIT_ROTATE_BYTES:
+                        os.replace(path, path + ".1")
+                except OSError:
+                    pass
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(line, sort_keys=True) + "\n")
+        except OSError:
+            pass
+
+    def audit_lines(self, vault_id: str) -> dict:
+        """The newest lines of a vault's log, oldest first."""
+        lines = []
+        try:
+            with open(self._audit_path(vault_id), encoding="utf-8") as f:
+                for text in f.readlines()[-AUDIT_LINES_SENT:]:
+                    try:
+                        line = json.loads(text)
+                    except ValueError:
+                        continue
+                    if isinstance(line, dict):
+                        lines.append(line)
+        except OSError:
+            pass
+        return {"lines": lines}
 
     def account(self, username: str):
         """The stored account, or None. Matches the name exactly."""
@@ -395,6 +457,9 @@ class AccountStore:
         kdf = keyset_kdf(body.get("keyset"))
         keyset_kdf(body.get("recovery"), recovery=True)
         public_key = _unb64(body.get("public_key"), "The public key", 32)
+        signing_key = body.get("signing_key")
+        if signing_key is not None:
+            signing_key = _b64(_unb64(signing_key, "The signing key", 32))
         vault_id = body.get("personal_vault")
         if not isinstance(vault_id, str) or not VAULT_ID.match(vault_id):
             raise V2Error(400, "The personal vault id is not valid.")
@@ -413,6 +478,7 @@ class AccountStore:
                 "created_at": utc_now(),
                 "login": hash_login_key(login_key),
                 "public_key": _b64(public_key),
+                "signing_key": signing_key or "",
                 "keyset": body["keyset"],
                 "recovery": body["recovery"],
                 "kdf": kdf,
@@ -524,7 +590,8 @@ class AccountStore:
         view = {"id": vault_id, "kind": members.get("kind", "personal"),
                 "role": member.get("role", "owner"),
                 "revision": meta["revision"],
-                "key_generation": meta.get("key_generation", 0)}
+                "key_generation": int(members.get("key_generation", 0)),
+                "members": len(members.get("members", {}))}
         # The personal vault's key is in the keyset and it has no name; every
         # other vault carries its key wrapped to this member, and its name
         # sealed under that key.
@@ -542,6 +609,7 @@ class AccountStore:
             if view is not None:
                 vaults.append(view)
         return {"username": record["username"], "public_key": record["public_key"],
+                "signing_key": record.get("signing_key", ""),
                 "keyset": record["keyset"], "recovery": record["recovery"],
                 "kdf": record["kdf"], "personal_vault": vault_id,
                 "vaults": vaults}
@@ -561,6 +629,45 @@ class AccountStore:
                            "password_changed_at": utc_now()})
             self._write_json(self._account_path(username), record)
         self._drop_expired_sessions(user_to_end=username, keep_token=keep_token)
+
+    def set_signing_key(self, username: str, body: dict) -> None:
+        """
+        The public half of the key an account signs its changes with. Set
+        once: an account made before signing existed sends it at its next
+        login, and from then on it cannot be swapped -- not even by someone
+        holding a session of the account.
+        """
+        key = _b64(_unb64(body.get("signing_key"), "The signing key", 32))
+        with _lock:
+            record = self.account(username)
+            had = record.get("signing_key", "")
+            if had and had != key:
+                raise V2Error(409, "This account already has a signing key; "
+                                   "it cannot be replaced.")
+            if not had:
+                record["signing_key"] = key
+                self._write_json(self._account_path(username), record)
+
+    def find_account(self, name: str):
+        """An account by name in any letter case (as people type it when they
+        share a vault), or None. Disabled accounts are not found."""
+        if not isinstance(name, str) or not valid_username(name):
+            return None
+        record = self._read_json(self._account_path(name))
+        if not record or record.get("disabled"):
+            return None
+        return record
+
+    def public_keys(self, name: str) -> dict:
+        """What is needed to share a vault with an account and to check what
+        it signed: its public keys, and its name as it spells it."""
+        record = self.find_account(name)
+        if record is None:
+            raise V2Error(404, f"There is no account called “{name}” on this "
+                               "server.")
+        return {"username": record["username"],
+                "public_key": record["public_key"],
+                "signing_key": record.get("signing_key", "")}
 
     # -- vaults -------------------------------------------------------------
     @staticmethod
@@ -589,14 +696,17 @@ class AccountStore:
         with _lock:
             record = self.account(username)
             mine = list(record.get("vaults", []))
-            if len(mine) >= MAX_VAULTS_PER_ACCOUNT:
+            made = sum(1 for each in mine
+                       if (self._read_json(self._members_path(each)) or {})
+                       .get("created_by") == username)
+            if made >= MAX_VAULTS_PER_ACCOUNT or len(mine) >= MAX_VAULTS_LISTED:
                 raise V2Error(403, f"An account can have {MAX_VAULTS_PER_ACCOUNT} "
                                    "vaults besides its personal one.")
             if os.path.exists(os.path.join(self.vaults.root, vault_id)):
                 raise V2Error(409, "That vault id is already in use.")
             self._write_json(self._members_path(vault_id), {
                 "kind": "shared", "created_at": utc_now(),
-                "created_by": username, "name": name,
+                "created_by": username, "name": name, "key_generation": 0,
                 "members": {username: {"role": "owner", "wrapped_key": wrapped}}})
             record["vaults"] = mine + [vault_id]
             self._write_json(self._account_path(username), record)
@@ -636,6 +746,162 @@ class AccountStore:
             os.replace(os.path.join(self.vaults.root, vault_id),
                        os.path.join(graveyard, f"{vault_id}-{stamp}"))
 
+    # -- members ------------------------------------------------------------
+    def _shared(self, vault_id: str) -> dict:
+        """A vault's members file, for a change to who is in it."""
+        members = self._read_json(self._members_path(vault_id)) or {}
+        if members.get("kind") == "personal":
+            raise V2Error(400, "A personal vault cannot be shared; make "
+                               "another vault for that.")
+        return members
+
+    @staticmethod
+    def _owners(members: dict) -> list:
+        return [n for n, m in members.get("members", {}).items()
+                if m.get("role") == "owner"]
+
+    def members(self, vault_id: str) -> dict:
+        """Who is in a vault -- every member may know."""
+        members = self._read_json(self._members_path(vault_id)) or {}
+        return {"key_generation": int(members.get("key_generation", 0)),
+                "members": [
+                    {"username": name, "role": m.get("role", "owner"),
+                     "added_by": m.get("added_by", ""),
+                     "added_at": m.get("added_at", "")}
+                    for name, m in sorted(members.get("members", {}).items(),
+                                          key=lambda kv: kv[0].lower())]}
+
+    def put_member(self, actor: str, vault_id: str, name: str, body: dict) -> dict:
+        """
+        Add an account to a vault, or change a member's role (owners only;
+        the caller has checked). A new member comes with the vault key
+        wrapped to their public key by the owner's device -- the server never
+        holds a key it could hand out itself. Returns {"username", "role",
+        "added": bool}.
+        """
+        role = body.get("role")
+        if role not in ROLES:
+            raise V2Error(400, "The role must be owner, editor or reader.")
+        with _lock:
+            members = self._shared(vault_id)
+            people = members.setdefault("members", {})
+            target = self.find_account(name)
+            if target is None:
+                raise V2Error(404, f"There is no account called “{name}” on "
+                                   "this server.")
+            who = target["username"]
+            if who in people:
+                if people[who].get("role") == "owner" and role != "owner" \
+                        and self._owners(members) == [who]:
+                    raise V2Error(409, "A vault needs at least one owner.")
+                people[who]["role"] = role
+                self._write_json(self._members_path(vault_id), members)
+                return {"username": who, "role": role, "added": False}
+            wrapped = _b64(_unb64(body.get("wrapped_key"), "The vault key",
+                                  WRAPPED_KEY_LEN))
+            if len(people) >= MAX_MEMBERS_PER_VAULT:
+                raise V2Error(403, f"A vault can have {MAX_MEMBERS_PER_VAULT} "
+                                   "members.")
+            listed = list(target.get("vaults", []))
+            if len(listed) >= MAX_VAULTS_LISTED:
+                raise V2Error(409, f"“{who}” is in too many vaults already.")
+            people[who] = {"role": role, "wrapped_key": wrapped,
+                           "added_by": actor, "added_at": utc_now()}
+            self._write_json(self._members_path(vault_id), members)
+            target["vaults"] = listed + [vault_id]
+            self._write_json(self._account_path(who), target)
+            return {"username": who, "role": role, "added": True}
+
+    def _unlist(self, name: str, vault_id: str) -> None:
+        record = self.account(name)
+        if record and vault_id in record.get("vaults", []):
+            record["vaults"] = [v for v in record["vaults"] if v != vault_id]
+            self._write_json(self._account_path(name), record)
+
+    def leave_vault(self, username: str, vault_id: str) -> None:
+        """A member takes themself out of a vault. (An owner removes someone
+        else with :meth:`rotate`, which changes the key in the same step.)"""
+        with _lock:
+            members = self._shared(vault_id)
+            people = members.get("members", {})
+            if self._owners(members) == [username]:
+                raise V2Error(409, "You are this vault's only owner: make "
+                                   "someone else an owner first, or delete "
+                                   "the vault.")
+            people.pop(username, None)
+            self._write_json(self._members_path(vault_id), members)
+            self._unlist(username, vault_id)
+
+    def rotate(self, actor: str, vault_id: str, body: dict) -> dict:
+        """
+        Give a vault a new key, optionally removing members in the same step
+        (owners only; the caller has checked). The owner's device made the
+        key; what arrives is the vault re-encrypted under it, its name sealed
+        again, and the key wrapped to every member who stays. It all changes
+        together or not at all:
+
+        - ``generation`` must be the next one;
+        - ``wrapped_keys`` must name exactly the members who stay;
+        - ``blob`` must be this vault at that generation, made against the
+          revision the server holds (``revision``), or absent while the
+          vault has never been uploaded.
+
+        Earlier revisions are dropped: they are under the old key, which the
+        removed members still have.
+        """
+        with _lock:
+            members = self._shared(vault_id)
+            people = members.get("members", {})
+            generation = int(members.get("key_generation", 0)) + 1
+            if body.get("generation") != generation:
+                raise V2Error(409, "The vault's key was changed in the "
+                                   "meantime. Sync, then try again.")
+            removed = body.get("remove") or []
+            if not isinstance(removed, list) or actor in removed or \
+                    any(name not in people for name in removed):
+                raise V2Error(400, "The members to remove are not valid.")
+            staying = [name for name in people if name not in removed]
+            wrapped = body.get("wrapped_keys")
+            if not isinstance(wrapped, dict) or sorted(wrapped) != sorted(staying):
+                raise V2Error(409, "The members of this vault changed in the "
+                                   "meantime. Sync, then try again.")
+            clean = {name: _b64(_unb64(wrapped[name], "A vault key",
+                                       WRAPPED_KEY_LEN)) for name in staying}
+            name = self._sealed_name(body)
+
+            current = int(self.vaults.meta(vault_id)["revision"])
+            blob = body.get("blob")
+            if blob is None:
+                if current != 0:
+                    raise V2Error(400, "The vault under its new key is missing.")
+            else:
+                if body.get("revision") != current:
+                    raise V2Error(409, f"Vault has moved on: server is at "
+                                       f"revision {current}. Sync, then try "
+                                       "again.")
+                try:
+                    raw = base64.b64decode(str(blob).encode("ascii"), validate=True)
+                except Exception:
+                    raise V2Error(400, "Blob is not valid base64.") from None
+                check_vault_blob(raw, vault_id, generation)
+                self.vaults.write(vault_id, str(blob).encode("ascii"),
+                                  generation, drop_history=True)
+
+            for gone in removed:
+                del people[gone]
+            for each in staying:
+                people[each]["wrapped_key"] = clean[each]
+            members["key_generation"] = generation
+            members["name"] = name
+            self._write_json(self._members_path(vault_id), members)
+            for gone in removed:
+                self._unlist(gone, vault_id)
+        return self._vault_view(actor, vault_id)
+
+    def key_generation(self, vault_id: str) -> int:
+        members = self._read_json(self._members_path(vault_id)) or {}
+        return int(members.get("key_generation", 0))
+
     def role(self, username: str, vault_id: str):
         """This user's role in the vault, or None (also for no such vault)."""
         if not VAULT_ID.match(vault_id or ""):
@@ -645,13 +911,20 @@ class AccountStore:
         return member.get("role") if member else None
 
 
-def check_vault_blob(raw: bytes, vault_id: str) -> None:
+def check_vault_blob(raw: bytes, vault_id: str, generation: int = None) -> None:
     """A v2 vault blob must be PMV3 and name the vault it is stored as, so a
-    confused client cannot put one vault's file in another's place."""
+    confused client cannot put one vault's file in another's place. With
+    ``generation`` it must also say it is under the vault's current key: a
+    device that missed a key change must sync before it uploads, or it would
+    put back a copy that the removed members can read."""
     if raw[:4] != _VAULT_MAGIC or len(raw) < 4 + 1 + 16 + 4 + 12 + 16:
         raise V2Error(400, "That is not a SecretSpace 3 vault.")
     if raw[5:21] != bytes.fromhex(vault_id):
         raise V2Error(400, "That vault file belongs to another vault.")
+    if generation is not None and \
+            int.from_bytes(raw[21:25], "big") != generation:
+        raise V2Error(409, "This vault's key was changed on another device. "
+                           "Sync again to get the new key.")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -714,8 +987,11 @@ class Handler(BaseHTTPRequestHandler):
             # "features" lets a 3.0 client say "this server is too old for
             # that" instead of failing half-way: "vaults" = several vaults
             # per account (2.0.0-alpha.2).
+            # "sharing" = members, roles, key change and the audit log
+            # (2.0.0-alpha.3).
             return self._send(200, {"ok": True, "service": "passman-sync",
-                                    "api": [1, 2], "features": ["vaults"]})
+                                    "api": [1, 2],
+                                    "features": ["vaults", "sharing"]})
         if self._is_v2():
             return self._v2("GET")
 
@@ -788,7 +1064,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return payload
 
-    def _store_blob(self, store, name, check=None):
+    def _store_blob(self, store, name, check=None, stored=None):
         try:
             length = int(self.headers.get("Content-Length", 0))
         except ValueError:
@@ -858,6 +1134,8 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as e:
                 return self._error(500, f"Could not store the vault: {e}")
 
+        if stored is not None:
+            stored(meta)
         return self._send(200, meta)
 
     # -- API v2: SecretSpace 3 accounts -------------------------------------
@@ -879,7 +1157,11 @@ class Handler(BaseHTTPRequestHandler):
         return header[len("Bearer "):] if header.startswith("Bearer ") else ""
 
     def _v2(self, method: str):
-        parts = [p for p in self.path.split("?")[0].split("/") if p][1:]
+        # Names in a path arrive percent-encoded ("a%20b"). Whatever a part
+        # decodes to, it is only ever compared with fixed words or checked as
+        # a username or a vault id before it is used.
+        parts = [urllib.parse.unquote(p)
+                 for p in self.path.split("?")[0].split("/") if p][1:]
         try:
             return self._v2_route(method, parts)
         except V2Error as e:
@@ -892,9 +1174,21 @@ class Handler(BaseHTTPRequestHandler):
         # -- no login needed ---------------------------------------------------
         if route == ("GET", "prelogin", 2):
             return self._send(200, accounts.prelogin(parts[1]))
+        address = self.client_address[0]
         if route == ("POST", "login", 1):
             body = self._read_body()
-            return None if body is None else self._send(200, accounts.login(body))
+            if body is None:
+                return None
+            tried = body.get("username")
+            tried = tried if isinstance(tried, str) and valid_username(tried) else "?"
+            try:
+                reply = accounts.login(body)
+            except V2Error as e:
+                accounts.audit(None, "login_failed", tried, address,
+                               status=e.status)
+                raise
+            accounts.audit(None, "login", reply["username"], address)
+            return self._send(200, reply)
         if route == ("POST", "accounts", 1):
             # The sign-up code is the server's token: whoever was given it may
             # make an account here, as whoever has it may sync a 2.x vault.
@@ -904,7 +1198,9 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_body()
             if body is None:
                 return None
-            return self._send(201, accounts.create_account(body))
+            made = accounts.create_account(body)
+            accounts.audit(None, "account_created", made["username"], address)
+            return self._send(201, made)
 
         # -- everything else needs a session -------------------------------
         token = self._bearer()
@@ -922,45 +1218,131 @@ class Handler(BaseHTTPRequestHandler):
             if body is None:
                 return None
             accounts.change_keyset(username, body, keep_token=token)
+            accounts.audit(None, "password_changed", username, address)
             return self._send(200, {})
+        if route == ("PUT", "me", 2) and parts[1] == "signing-key":
+            body = self._read_body()
+            if body is None:
+                return None
+            accounts.set_signing_key(username, body)
+            return self._send(200, {})
+        if route == ("GET", "accounts", 3) and parts[2] == "public-key":
+            return self._send(200, accounts.public_keys(parts[1]))
         if route == ("POST", "vaults", 1):
             body = self._read_body()
             if body is None:
                 return None
-            return self._send(201, accounts.create_vault(username, body))
-        if parts and parts[0] == "vaults" and len(parts) in (2, 3):
+            made = accounts.create_vault(username, body)
+            accounts.audit(made["id"], "vault_created", username, address)
+            return self._send(201, made)
+        if parts and parts[0] == "vaults" and len(parts) in (2, 3, 4):
             vault_id = parts[1]
-            tail = parts[2] if len(parts) == 3 else ""
+            tail = parts[2] if len(parts) >= 3 else ""
             role = accounts.role(username, vault_id)
             # Not a member and no such vault answer alike, so a guess at an
             # id learns nothing.
-            if role is None or tail not in ("", "meta", "name"):
+            if role is None or tail not in ("", "meta", "name", "members",
+                                            "rotate", "log"):
                 return self._error(404, "No such vault.")
-            if tail == "name" or method == "DELETE":
-                # The vault itself, not what is in it: its owners' business.
-                if (tail, method) not in (("name", "PUT"), ("", "DELETE")):
-                    return self._error(404, "No such endpoint.")
-                if role != "owner":
+            if len(parts) == 4 and tail != "members":
+                return self._error(404, "No such endpoint.")
+            owners_only = self._v2_vault_owner_call(
+                method, tail, len(parts), parts[3] if len(parts) == 4 else "",
+                username)
+            if owners_only is not None:
+                if role != "owner" and not owners_only["anyone"]:
                     return self._error(403, "Only an owner of this vault can "
                                             "do that.")
-                if method == "DELETE":
-                    accounts.delete_vault(username, vault_id)
-                    return self._send(200, {})
-                body = self._read_body()
-                if body is None:
-                    return None
-                return self._send(200, accounts.rename_vault(username, vault_id,
-                                                             body))
-            if method == "GET":
+                return owners_only["run"](accounts, vault_id, username, address)
+            if tail == "members" and method == "GET" and len(parts) == 3:
+                return self._send(200, accounts.members(vault_id))
+            if method == "GET" and tail in ("", "meta") and len(parts) <= 3:
                 return self._send_blob(accounts.vaults, vault_id, tail)
             if method == "PUT" and not tail:
                 if role not in ROLES_THAT_WRITE:
                     return self._error(403, "You can read this vault but not "
                                             "change it.")
+                generation = accounts.key_generation(vault_id)
                 return self._store_blob(
                     accounts.vaults, vault_id,
-                    check=lambda raw: check_vault_blob(raw, vault_id))
+                    check=lambda raw: check_vault_blob(raw, vault_id, generation),
+                    stored=lambda meta: accounts.audit(
+                        vault_id, "upload", username, address,
+                        revision=meta["revision"]))
         return self._error(404, "No such endpoint.")
+
+    def _v2_vault_owner_call(self, method, tail, count, member, username):
+        """
+        The calls about a vault itself rather than what is in it -- its
+        name, its members, its key, its log, deleting it. Returns None for
+        anything else, or {"run": the call, "anyone": may a member who is
+        not an owner make it}.
+        """
+        def body_then(action):
+            def run(accounts, vault_id, actor, address):
+                body = self._read_body()
+                if body is None:
+                    return None
+                return action(accounts, vault_id, actor, address, body)
+            return run
+
+        def rename(accounts, vault_id, actor, address, body):
+            view = accounts.rename_vault(actor, vault_id, body)
+            accounts.audit(vault_id, "vault_renamed", actor, address)
+            return self._send(200, view)
+
+        def delete(accounts, vault_id, actor, address):
+            # Logged first: the line then leaves with the vault's folder.
+            accounts.audit(vault_id, "vault_deleted", actor, address)
+            accounts.delete_vault(actor, vault_id)
+            return self._send(200, {})
+
+        def put_member(accounts, vault_id, actor, address, body):
+            done = accounts.put_member(actor, vault_id, member, body)
+            accounts.audit(vault_id,
+                           "member_added" if done["added"] else "member_role",
+                           actor, address, member=done["username"],
+                           role=done["role"])
+            return self._send(200, done)
+
+        def leave(accounts, vault_id, actor, address):
+            accounts.leave_vault(actor, vault_id)
+            accounts.audit(vault_id, "member_left", actor, address)
+            return self._send(200, {})
+
+        def rotate(accounts, vault_id, actor, address, body):
+            view = accounts.rotate(actor, vault_id, body)
+            accounts.audit(vault_id, "key_changed", actor, address,
+                           generation=view["key_generation"],
+                           removed=list(body.get("remove") or []))
+            return self._send(200, view)
+
+        def log(accounts, vault_id, actor, address):
+            return self._send(200, accounts.audit_lines(vault_id))
+
+        if (method, tail, count) == ("PUT", "name", 3):
+            return {"run": body_then(rename), "anyone": False}
+        if (method, tail, count) == ("DELETE", "", 2):
+            return {"run": delete, "anyone": False}
+        if (method, tail, count) == ("PUT", "members", 4):
+            return {"run": body_then(put_member), "anyone": False}
+        if (method, tail, count) == ("DELETE", "members", 4):
+            # Only yourself; an owner removes others by changing the key.
+            if member != username:
+                return {"run": lambda *a: self._error(
+                    400, "Remove a member by changing the vault's key "
+                         "(rotate), so they cannot read what is written "
+                         "afterwards."), "anyone": False}
+            return {"run": leave, "anyone": True}
+        if (method, tail, count) == ("POST", "rotate", 3):
+            return {"run": body_then(rotate), "anyone": False}
+        if (method, tail, count) == ("GET", "log", 3):
+            return {"run": log, "anyone": False}
+        if tail in ("name", "rotate", "log") or method == "DELETE" \
+                or (tail == "members" and (count == 4 or method != "GET")):
+            return {"run": lambda *a: self._error(404, "No such endpoint."),
+                    "anyone": True}
+        return None
 
 
 def load_token(args) -> str:

@@ -74,7 +74,7 @@ def bob(server):
 
 def test_health_says_the_server_has_vaults(server):
     _, _, body = server.request("GET", "/health", token=None)
-    assert body["features"] == ["vaults"]
+    assert body["features"] == ["vaults", "sharing"]
 
 
 # --- create --------------------------------------------------------------------
@@ -84,7 +84,7 @@ def test_a_vault_is_made_and_the_owner_is_told_about_it(server, alice):
     status, view, sent = create(server, session)
     assert status == 201
     assert view == {"id": sent["id"], "kind": "shared", "role": "owner",
-                    "revision": 0, "key_generation": 0,
+                    "revision": 0, "key_generation": 0, "members": 1,
                     "name": sent["name"], "wrapped_key": sent["wrapped_key"]}
 
 
@@ -96,7 +96,7 @@ def test_me_lists_the_personal_vault_first_then_the_others(server, alice):
     assert [v["id"] for v in vaults] == [alice.vault, first["id"], second["id"]]
     # the personal vault has no name and no wrapped key; the key is in the keyset
     assert vaults[0] == {"id": alice.vault, "kind": "personal", "role": "owner",
-                         "revision": 0, "key_generation": 0}
+                         "revision": 0, "key_generation": 0, "members": 1}
     assert "name" not in vaults[0] and "wrapped_key" not in vaults[0]
     assert vaults[1]["name"] == first_sent["name"]
     assert vaults[1]["wrapped_key"] == first_sent["wrapped_key"]
