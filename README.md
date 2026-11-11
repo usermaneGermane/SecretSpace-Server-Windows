@@ -23,9 +23,9 @@ rule **PassMan Sync Server**, `%ProgramData%\PassMan Server`, and the
 folder it was installed in.
 
 **Which apps it serves.** SecretSpace for Windows 2.x and SecretSpace for Linux
-0.x sync with it. The SecretSpace 3 test versions (Windows 3.0.0-alpha, Linux
-1.0.0-alpha) do not sync yet: they need accounts on the server, which come
-with server 2.0.
+0.x sync with it. The SecretSpace 3 test versions (Windows 3.0.0-alpha.6, Linux
+1.0.0-alpha.6) sync with the newest test version of the server, 2.0.0-alpha.3,
+through the accounts and sharing described under API v2 below.
 
 This repository is the server for **Windows**. The other parts of SecretSpace
 have their own repositories:
@@ -310,13 +310,20 @@ like a 2.x one, with the same revision, `If-Match` and history rules.
 | `/v2/accounts` | POST | the server's **token**, as the sign-up code | make an account (and its personal vault) |
 | `/v2/login` | POST | anyone | Login Key → a session, valid 12 hours. After 10 wrong tries in 15 minutes the name is paused for a minute |
 | `/v2/logout` | POST | session | end this session |
-| `/v2/me` | GET | session | the account: public key, keyset, recovery copy, its vaults |
+| `/v2/me` | GET | session | the account: public key, signing key, keyset, recovery copy, its vaults (each with its role, key generation and member count) |
 | `/v2/me/keyset` | PUT | session | a new master password: new keyset and Login Key; every other session of the account ends |
 | `/v2/vaults/<id>` | GET / PUT | session, member | the vault blob, as `/vault/<user>` (PUT: owner or editor; it must be a PMV3 file naming this vault) |
 | `/v2/vaults/<id>/meta` | GET | session, member | its metadata |
 | `/v2/vaults` | POST | session | make a further vault, owned by the caller (**201**): `{id, name, wrapped_key}`. **400** for a bad id, name or key, **409** if the id is in use, **403** past 50 vaults |
 | `/v2/vaults/<id>/name` | PUT | session, owner | change the vault's name (not for the personal vault) |
-| `/v2/vaults/<id>` | DELETE | session, owner | delete the vault (not the personal one, which goes with the account) |
+| `/v2/vaults/<id>` | DELETE | session, owner | delete the vault (not the personal one, which goes with the account); it disappears for every member |
+| `/v2/me/signing-key` | PUT | session | set the public key the account signs its changes with: `{signing_key}`, 32 bytes in base64. Once only: the same key again is **200**, another one **409**, a wrong length **400** |
+| `/v2/accounts/<user>/public-key` | GET | session | another account's public key and signing key, and its name as the server spells it (the lookup ignores letter case). **404** for an unknown name |
+| `/v2/vaults/<id>/members` | GET | session, member | who is in the vault: `key_generation` and a list of `{username, role, added_by, added_at}`, sorted by name |
+| `/v2/vaults/<id>/members/<user>` | PUT | session, owner | add a member or change a role: `{role, wrapped_key}`. `role` is `owner`, `editor` or `reader`; `wrapped_key` is needed for a new member and ignored for an existing one. **400** for a bad role or key or for a personal vault, **404** for an unknown account, **403** past 50 members, **409** when it would leave the vault without an owner |
+| `/v2/vaults/<id>/members/<user>` | DELETE | session, yourself | leave the vault. **409** for its only owner. Anyone else is removed with `rotate` (an owner who tries this gets **400**) |
+| `/v2/vaults/<id>/rotate` | POST | session, owner | change the vault's key, and remove members in the same call: `{generation, remove, wrapped_keys, name, blob, revision}` (see below) |
+| `/v2/vaults/<id>/log` | GET | session, owner | the vault's log: `{lines}`, oldest first, the newest 200 |
 
 Sessions are sent as `Authorization: Bearer <session>`. The server's token
 is not a session and opens no account; a session opens no 2.x vault. A vault
@@ -334,10 +341,58 @@ server may empty `_v2\deleted\` when sure. An
 account made by 2.0.0-alpha.1 needs no change. `/health` now also lists
 `"features": ["vaults"]`, so a client can tell whether a server has this.
 
+Server **2.0.0-alpha.3** lets an account **share a vault** with other accounts
+on the same server. It goes with the Windows 3.0.0-alpha.6 and Linux
+1.0.0-alpha.6 test versions. Each member has a role:
+
+- **owner**: everything, including adding and removing members, changing the
+  vault's key, renaming or deleting it, and reading its log. A vault always
+  keeps at least one owner.
+- **editor**: reads and uploads.
+- **reader**: reads only. The server refuses a reader's upload (**403**), so
+  this does not depend on the app behaving.
+
+The server never holds a key it could hand out. The owner's device wraps the
+vault key to the new member's public key, and that wrapped key is all the
+server stores for them. To remove a member, an owner's device makes a **new
+vault key** and sends, in one call to `rotate`, the vault encrypted under it,
+its name sealed again, and the new key wrapped to every member who stays.
+The server checks that the keys are for exactly the members who stay, that
+the vault file is this vault at the next key generation, and that it was
+made against the revision the server holds. It then applies everything
+together; if any check fails, nothing changes. The earlier revisions in
+`history/` are deleted, because they are under the old key, which the removed
+member still has. From then on the server refuses an upload that is still
+under the old key (**409**), so a device that missed the change has to sync
+first. A member can leave a vault on their own at any time.
+
+The server keeps a log, one JSON line per event, only ever appended:
+
+- `_v2/vaults/<id>/audit.log` for each vault: the vault was created, renamed
+  or deleted, an upload (with its revision), a member was added, had their
+  role changed or left, and the key was changed (with the new generation and
+  who was removed). The vault's owners can read it with `GET
+  /v2/vaults/<id>/log`.
+- `_v2/logins.log` for the whole server: logins, failed logins (with the
+  status), accounts made and passwords changed. Nothing in the API reads it;
+  read it on the server.
+
+Each line has the time, the event, the account that did it and the address
+it came from. The log holds **no vault content, no keys and no names**: the
+server cannot read those, so it cannot write them down. It does not record
+who viewed or copied an entry either; that happens on the device and the
+server never learns of it. A log file that reaches 2 MB is renamed to
+`<name>.1`, replacing the earlier one, and a new file is started. If a line
+cannot be written (a full disk, say), the request it belongs to still
+succeeds and the line is missing. A name with a space in it (`ann lee`) works
+in paths when it is sent percent-encoded (`ann%20lee`). `/health` now lists
+`"features": ["vaults", "sharing"]`.
+
 Everything v2 keeps is in `_v2/` inside the vault store (a 2.x name cannot
 start with `_`), so backing up the store backs it up too: `accounts/`,
-`sessions/` (stored hashed), `vaults/<id>/` and `server.key` (for the
-made-up pre-login answers).
+`sessions/` (stored hashed), `vaults/<id>/` (with its `members.json` and
+`audit.log`), `logins.log` and `server.key` (for the made-up pre-login
+answers).
 
 ## What it keeps
 
