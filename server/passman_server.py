@@ -235,6 +235,20 @@ DEFAULT_KDF = {"memory_kib": 65536, "passes": 3, "lanes": 1}
 VAULT_ID = re.compile(r"^[0-9a-f]{32}$")
 ROLES_THAT_WRITE = ("owner", "editor")
 
+#: Vaults an account may own besides its personal one. Whoever holds the
+#: sign-up code can make an account; this keeps one from filling the disk
+#: with empty vaults.
+MAX_VAULTS_PER_ACCOUNT = 50
+
+#: A vault key wrapped to a member (account_crypto.wrap_key on the client):
+#: version, a one-off X25519 public key, a nonce, the key and its tag.
+WRAPPED_KEY_LEN = 1 + 32 + 12 + 32 + 16
+
+#: A vault's name arrives sealed under the vault's key, so the server cannot
+#: read it: a nonce, the name (up to 200 bytes) and a tag.
+MIN_SEALED_NAME = 12 + 1 + 16
+MAX_SEALED_NAME = 12 + 200 + 16
+
 #: The account files' layouts, from the client (account_crypto.py).
 _KEYSET_MAGIC = b"PMK3"
 _KEYSET_HEADER = 4 + 1 + 1 + 4 + 1 + 1 + 16     # magic ver kdf mem passes lanes salt
@@ -499,17 +513,34 @@ class AccountStore:
                     pass
 
     # -- the account itself -------------------------------------------------
+    def _vault_view(self, username: str, vault_id: str):
+        """What an account is told about one of its vaults, or None when it
+        is not (or no longer) a member."""
+        members = self._read_json(self._members_path(vault_id)) or {}
+        member = members.get("members", {}).get(username)
+        if member is None:
+            return None
+        meta = self.vaults.meta(vault_id)
+        view = {"id": vault_id, "kind": members.get("kind", "personal"),
+                "role": member.get("role", "owner"),
+                "revision": meta["revision"],
+                "key_generation": meta.get("key_generation", 0)}
+        # The personal vault's key is in the keyset and it has no name; every
+        # other vault carries its key wrapped to this member, and its name
+        # sealed under that key.
+        if view["kind"] != "personal":
+            view["name"] = members.get("name", "")
+            view["wrapped_key"] = member.get("wrapped_key", "")
+        return view
+
     def me(self, username: str) -> dict:
         record = self.account(username)
-        vaults = []
         vault_id = record["personal_vault"]
-        members = self._read_json(self._members_path(vault_id)) or {}
-        meta = self.vaults.meta(vault_id)
-        vaults.append({"id": vault_id, "kind": members.get("kind", "personal"),
-                       "role": members.get("members", {}).get(username, {})
-                                      .get("role", "owner"),
-                       "revision": meta["revision"],
-                       "key_generation": meta.get("key_generation", 0)})
+        vaults = []
+        for each in [vault_id] + list(record.get("vaults", [])):
+            view = self._vault_view(username, each)
+            if view is not None:
+                vaults.append(view)
         return {"username": record["username"], "public_key": record["public_key"],
                 "keyset": record["keyset"], "recovery": record["recovery"],
                 "kdf": record["kdf"], "personal_vault": vault_id,
@@ -532,6 +563,79 @@ class AccountStore:
         self._drop_expired_sessions(user_to_end=username, keep_token=keep_token)
 
     # -- vaults -------------------------------------------------------------
+    @staticmethod
+    def _sealed_name(body: dict) -> str:
+        name = body.get("name")
+        try:
+            size = len(base64.b64decode(name, validate=True))
+        except Exception:
+            size = 0
+        if not isinstance(name, str) or not MIN_SEALED_NAME <= size <= MAX_SEALED_NAME:
+            raise V2Error(400, "The vault's name is missing or too long.")
+        return name
+
+    def create_vault(self, username: str, body: dict) -> dict:
+        """
+        A further vault for ``username``, who becomes its owner. The client
+        made the vault's id and key; the server gets the key only wrapped to
+        the owner's public key, and the name only sealed under the vault key.
+        """
+        vault_id = body.get("id")
+        if not isinstance(vault_id, str) or not VAULT_ID.match(vault_id):
+            raise V2Error(400, "The vault id is not valid.")
+        name = self._sealed_name(body)
+        wrapped = _b64(_unb64(body.get("wrapped_key"), "The vault key",
+                              WRAPPED_KEY_LEN))
+        with _lock:
+            record = self.account(username)
+            mine = list(record.get("vaults", []))
+            if len(mine) >= MAX_VAULTS_PER_ACCOUNT:
+                raise V2Error(403, f"An account can have {MAX_VAULTS_PER_ACCOUNT} "
+                                   "vaults besides its personal one.")
+            if os.path.exists(os.path.join(self.vaults.root, vault_id)):
+                raise V2Error(409, "That vault id is already in use.")
+            self._write_json(self._members_path(vault_id), {
+                "kind": "shared", "created_at": utc_now(),
+                "created_by": username, "name": name,
+                "members": {username: {"role": "owner", "wrapped_key": wrapped}}})
+            record["vaults"] = mine + [vault_id]
+            self._write_json(self._account_path(username), record)
+        return self._vault_view(username, vault_id)
+
+    def rename_vault(self, username: str, vault_id: str, body: dict) -> dict:
+        name = self._sealed_name(body)
+        with _lock:
+            members = self._read_json(self._members_path(vault_id)) or {}
+            if members.get("kind") == "personal":
+                raise V2Error(400, "The personal vault has no name to change.")
+            members["name"] = name
+            self._write_json(self._members_path(vault_id), members)
+        return self._vault_view(username, vault_id)
+
+    def delete_vault(self, username: str, vault_id: str) -> None:
+        """
+        Take a vault away from every member. Its folder is not erased but
+        moved to <store>/_v2/deleted/, so whoever runs the server can bring a
+        vault back that was deleted by mistake -- and can empty that folder
+        when they are sure.
+        """
+        with _lock:
+            members = self._read_json(self._members_path(vault_id)) or {}
+            if members.get("kind") == "personal":
+                raise V2Error(400, "The personal vault cannot be deleted; it "
+                                   "goes with the account.")
+            for name in members.get("members", {}):
+                record = self.account(name)
+                if record and vault_id in record.get("vaults", []):
+                    record["vaults"] = [v for v in record["vaults"]
+                                        if v != vault_id]
+                    self._write_json(self._account_path(name), record)
+            graveyard = os.path.join(self.root, "deleted")
+            os.makedirs(graveyard, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            os.replace(os.path.join(self.vaults.root, vault_id),
+                       os.path.join(graveyard, f"{vault_id}-{stamp}"))
+
     def role(self, username: str, vault_id: str):
         """This user's role in the vault, or None (also for no such vault)."""
         if not VAULT_ID.match(vault_id or ""):
@@ -607,8 +711,11 @@ class Handler(BaseHTTPRequestHandler):
     # -- routes -----------------------------------------------------------
     def do_GET(self):
         if self.path.split("?")[0] == "/health":
+            # "features" lets a 3.0 client say "this server is too old for
+            # that" instead of failing half-way: "vaults" = several vaults
+            # per account (2.0.0-alpha.2).
             return self._send(200, {"ok": True, "service": "passman-sync",
-                                    "api": [1, 2]})
+                                    "api": [1, 2], "features": ["vaults"]})
         if self._is_v2():
             return self._v2("GET")
 
@@ -636,6 +743,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._v2("POST")
         # 2.x never used POST: answer as before, when there was no do_POST.
         self.send_error(501, "Unsupported method ('POST')")
+
+    def do_DELETE(self):
+        if self._is_v2():
+            return self._v2("DELETE")
+        # Nor DELETE: a 2.x vault is never removed over the network.
+        self.send_error(501, "Unsupported method ('DELETE')")
 
     # -- one blob, for 2.x users and v2 vaults alike ------------------------
     def _send_blob(self, store, name, tail):
@@ -810,14 +923,34 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             accounts.change_keyset(username, body, keep_token=token)
             return self._send(200, {})
+        if route == ("POST", "vaults", 1):
+            body = self._read_body()
+            if body is None:
+                return None
+            return self._send(201, accounts.create_vault(username, body))
         if parts and parts[0] == "vaults" and len(parts) in (2, 3):
             vault_id = parts[1]
             tail = parts[2] if len(parts) == 3 else ""
             role = accounts.role(username, vault_id)
             # Not a member and no such vault answer alike, so a guess at an
             # id learns nothing.
-            if role is None or tail not in ("", "meta"):
+            if role is None or tail not in ("", "meta", "name"):
                 return self._error(404, "No such vault.")
+            if tail == "name" or method == "DELETE":
+                # The vault itself, not what is in it: its owners' business.
+                if (tail, method) not in (("name", "PUT"), ("", "DELETE")):
+                    return self._error(404, "No such endpoint.")
+                if role != "owner":
+                    return self._error(403, "Only an owner of this vault can "
+                                            "do that.")
+                if method == "DELETE":
+                    accounts.delete_vault(username, vault_id)
+                    return self._send(200, {})
+                body = self._read_body()
+                if body is None:
+                    return None
+                return self._send(200, accounts.rename_vault(username, vault_id,
+                                                             body))
             if method == "GET":
                 return self._send_blob(accounts.vaults, vault_id, tail)
             if method == "PUT" and not tail:
