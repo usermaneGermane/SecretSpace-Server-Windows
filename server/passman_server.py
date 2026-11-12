@@ -265,6 +265,15 @@ WRAPPED_KEY_LEN = 1 + 32 + 12 + 32 + 16
 MIN_SEALED_NAME = 12 + 1 + 16
 MAX_SEALED_NAME = 12 + 200 + 16
 
+#: What a device proves it can open the account's keyset with, when it
+#: recovers the account with the 12-word phrase (account_crypto.recovery_proof):
+#: 32 bytes, stored here only as a hash, like the Login Key.
+RECOVERY_PROOF_LEN = 32
+
+#: The size of a recovery copy for an account's usual keyset, for the
+#: made-up answer about a name that has no account (see recovery_copy).
+_RECOVERY_BODY = 12 + 133 + 16
+
 #: The account files' layouts, from the client (account_crypto.py).
 _KEYSET_MAGIC = b"PMK3"
 _KEYSET_HEADER = 4 + 1 + 1 + 4 + 1 + 1 + 16     # magic ver kdf mem passes lanes salt
@@ -460,6 +469,10 @@ class AccountStore:
         signing_key = body.get("signing_key")
         if signing_key is not None:
             signing_key = _b64(_unb64(signing_key, "The signing key", 32))
+        proof = body.get("recovery_proof")
+        if proof is not None:
+            proof = hash_login_key(_unb64(proof, "The recovery proof",
+                                          RECOVERY_PROOF_LEN))
         vault_id = body.get("personal_vault")
         if not isinstance(vault_id, str) or not VAULT_ID.match(vault_id):
             raise V2Error(400, "The personal vault id is not valid.")
@@ -479,6 +492,7 @@ class AccountStore:
                 "login": hash_login_key(login_key),
                 "public_key": _b64(public_key),
                 "signing_key": signing_key or "",
+                "recovery_check": proof,
                 "keyset": body["keyset"],
                 "recovery": body["recovery"],
                 "kdf": kdf,
@@ -610,6 +624,7 @@ class AccountStore:
                 vaults.append(view)
         return {"username": record["username"], "public_key": record["public_key"],
                 "signing_key": record.get("signing_key", ""),
+                "can_recover": bool(record.get("recovery_check")),
                 "keyset": record["keyset"], "recovery": record["recovery"],
                 "kdf": record["kdf"], "personal_vault": vault_id,
                 "vaults": vaults}
@@ -647,6 +662,103 @@ class AccountStore:
             if not had:
                 record["signing_key"] = key
                 self._write_json(self._account_path(username), record)
+
+    # -- recovery (phase 5) -----------------------------------------------------
+    def set_recovery_proof(self, username: str, body: dict) -> None:
+        """
+        What lets this account be recovered here with its 12-word phrase.
+        An account made before recovery existed sends it once, at its next
+        sync; it cannot be replaced afterwards. (It comes from the account's
+        own keys, which a new phrase does not change.)
+        """
+        proof = _unb64(body.get("recovery_proof"), "The recovery proof",
+                       RECOVERY_PROOF_LEN)
+        with _lock:
+            record = self.account(username)
+            had = record.get("recovery_check")
+            if had and not login_key_matches(proof, had):
+                raise V2Error(409, "This account can already be recovered; "
+                                   "that cannot be replaced.")
+            if not had:
+                record["recovery_check"] = hash_login_key(proof)
+                self._write_json(self._account_path(username), record)
+
+    def set_recovery_copy(self, username: str, body: dict) -> None:
+        """A new 12-word phrase: the keyset under it replaces the old copy,
+        so the old phrase opens nothing from now on."""
+        keyset_kdf(body.get("recovery"), recovery=True)
+        with _lock:
+            record = self.account(username)
+            record.update({"recovery": body["recovery"],
+                           "recovery_changed_at": utc_now()})
+            self._write_json(self._account_path(username), record)
+
+    def recovery_copy(self, username: str) -> dict:
+        """
+        The account's keyset under its 12-word phrase, for a device that
+        recovers the account. Handing it out is safe: it opens only with the
+        phrase, 128 random bits. For a name with no account the answer is
+        made up, the same on every ask, so it says nothing about which names
+        exist (as prelogin).
+        """
+        if not valid_username(username):
+            raise V2Error(400, "Not a valid username.")
+        # Any letter case, as the account's file is found (prelogin's rule).
+        record = self._read_json(self._account_path(username))
+        if record and record.get("username") and not record.get("disabled"):
+            return {"username": record["username"], "recovery": record["recovery"]}
+        key = self._server_key()
+        filler, block = b"", 0
+        while len(filler) < _RECOVERY_BODY:
+            filler += hmac.new(key, b"recovery|%d|" % block +
+                               username.lower().encode(), hashlib.sha256).digest()
+            block += 1
+        header = _KEYSET_MAGIC + bytes([1, 0]) + bytes(4 + 1 + 1 + 16)
+        return {"username": username,
+                "recovery": _b64(header + filler[:_RECOVERY_BODY])}
+
+    def recover(self, body: dict) -> dict:
+        """
+        A forgotten master password: the device opened the recovery copy
+        with the phrase, proves it holds the account's keys, and sends the
+        same keys under a new password (and the Login Key that goes with
+        it) and under a new phrase. Every session of the account ends.
+        """
+        username = body.get("username")
+        if not isinstance(username, str) or not valid_username(username):
+            raise V2Error(400, "Not a valid username.")
+        proof = _unb64(body.get("recovery_proof"), "The recovery proof",
+                       RECOVERY_PROOF_LEN)
+        login_key = _unb64(body.get("login_key"), "The login key", LOGIN_KEY_LEN)
+        kdf = keyset_kdf(body.get("keyset"))
+        keyset_kdf(body.get("recovery"), recovery=True)
+        if self._paused(username):
+            raise V2Error(429, "Too many wrong attempts for this account. "
+                               "Wait a minute, then try again.")
+        record = self.account(username)
+        stored = (record or {}).get("recovery_check")
+        # Hash even when there is nothing to compare with, as login does.
+        ok = login_key_matches(proof, stored or hash_login_key(b"\0" * 32)) \
+            and stored is not None and not record.get("disabled")
+        if not ok:
+            self._failed(username)
+            if record is not None and stored is None and not record.get("disabled"):
+                raise V2Error(409, "This account cannot be recovered on this "
+                                   "server yet: sync it once from a device with "
+                                   "SecretSpace 3.0.0-alpha.7 or newer.")
+            raise V2Error(401, "The recovery phrase does not open this account.")
+        with self._failure_lock:
+            self._failures.pop(username.lower(), None)
+        with _lock:
+            record = self.account(username)
+            record.update({"login": hash_login_key(login_key),
+                           "keyset": body["keyset"], "kdf": kdf,
+                           "recovery": body["recovery"],
+                           "password_changed_at": utc_now(),
+                           "recovered_at": utc_now()})
+            self._write_json(self._account_path(username), record)
+        self._drop_expired_sessions(user_to_end=username)
+        return {"username": username}
 
     def find_account(self, name: str):
         """An account by name in any letter case (as people type it when they
@@ -988,10 +1100,12 @@ class Handler(BaseHTTPRequestHandler):
             # that" instead of failing half-way: "vaults" = several vaults
             # per account (2.0.0-alpha.2).
             # "sharing" = members, roles, key change and the audit log
-            # (2.0.0-alpha.3).
+            # (2.0.0-alpha.3). "recovery" = an account recovered with its
+            # 12-word phrase (2.0.0-alpha.4).
             return self._send(200, {"ok": True, "service": "passman-sync",
                                     "api": [1, 2],
-                                    "features": ["vaults", "sharing"]})
+                                    "features": ["vaults", "sharing",
+                                                 "recovery"]})
         if self._is_v2():
             return self._v2("GET")
 
@@ -1189,6 +1303,22 @@ class Handler(BaseHTTPRequestHandler):
                 raise
             accounts.audit(None, "login", reply["username"], address)
             return self._send(200, reply)
+        if route == ("GET", "recovery", 2):
+            return self._send(200, accounts.recovery_copy(parts[1]))
+        if route == ("POST", "recovery", 1):
+            body = self._read_body()
+            if body is None:
+                return None
+            tried = body.get("username")
+            tried = tried if isinstance(tried, str) and valid_username(tried) else "?"
+            try:
+                done = accounts.recover(body)
+            except V2Error as e:
+                accounts.audit(None, "recovery_failed", tried, address,
+                               status=e.status)
+                raise
+            accounts.audit(None, "account_recovered", done["username"], address)
+            return self._send(200, done)
         if route == ("POST", "accounts", 1):
             # The sign-up code is the server's token: whoever was given it may
             # make an account here, as whoever has it may sync a 2.x vault.
@@ -1225,6 +1355,19 @@ class Handler(BaseHTTPRequestHandler):
             if body is None:
                 return None
             accounts.set_signing_key(username, body)
+            return self._send(200, {})
+        if route == ("PUT", "me", 2) and parts[1] == "recovery-proof":
+            body = self._read_body()
+            if body is None:
+                return None
+            accounts.set_recovery_proof(username, body)
+            return self._send(200, {})
+        if route == ("PUT", "me", 2) and parts[1] == "recovery":
+            body = self._read_body()
+            if body is None:
+                return None
+            accounts.set_recovery_copy(username, body)
+            accounts.audit(None, "recovery_phrase_changed", username, address)
             return self._send(200, {})
         if route == ("GET", "accounts", 3) and parts[2] == "public-key":
             return self._send(200, accounts.public_keys(parts[1]))

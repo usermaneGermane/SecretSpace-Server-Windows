@@ -74,7 +74,7 @@ def bob(server):
 
 def test_health_says_the_server_has_vaults(server):
     _, _, body = server.request("GET", "/health", token=None)
-    assert body["features"] == ["vaults", "sharing"]
+    assert body["features"] == ["vaults", "sharing", "recovery"]
 
 
 # --- create --------------------------------------------------------------------

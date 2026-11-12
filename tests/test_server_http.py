@@ -108,7 +108,7 @@ def test_health_answers_without_a_token(server):
     status, _, body = server.request("GET", "/health", token=None)
     assert status == 200
     assert body == {"ok": True, "service": "passman-sync", "api": [1, 2],
-                    "features": ["vaults", "sharing"]}
+                    "features": ["vaults", "sharing", "recovery"]}
 
 
 @pytest.mark.parametrize("header", [

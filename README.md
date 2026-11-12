@@ -23,9 +23,9 @@ rule **PassMan Sync Server**, `%ProgramData%\PassMan Server`, and the
 folder it was installed in.
 
 **Which apps it serves.** SecretSpace for Windows 2.x and SecretSpace for Linux
-0.x sync with it. The SecretSpace 3 test versions (Windows 3.0.0-alpha.6, Linux
-1.0.0-alpha.6) sync with the newest test version of the server, 2.0.0-alpha.3,
-through the accounts and sharing described under API v2 below.
+0.x sync with it. The SecretSpace 3 test versions (Windows 3.0.0-alpha.7, Linux
+1.0.0-alpha.7) sync with the newest test version of the server, 2.0.0-alpha.4,
+through the accounts, sharing and recovery described under API v2 below.
 
 This repository is the server for **Windows**. The other parts of SecretSpace
 have their own repositories:
@@ -310,7 +310,7 @@ like a 2.x one, with the same revision, `If-Match` and history rules.
 | `/v2/accounts` | POST | the server's **token**, as the sign-up code | make an account (and its personal vault) |
 | `/v2/login` | POST | anyone | Login Key → a session, valid 12 hours. After 10 wrong tries in 15 minutes the name is paused for a minute |
 | `/v2/logout` | POST | session | end this session |
-| `/v2/me` | GET | session | the account: public key, signing key, keyset, recovery copy, its vaults (each with its role, key generation and member count) |
+| `/v2/me` | GET | session | the account: public key, signing key, `can_recover` (whether a recovery proof is stored), keyset, recovery copy, its vaults (each with its role, key generation and member count) |
 | `/v2/me/keyset` | PUT | session | a new master password: new keyset and Login Key; every other session of the account ends |
 | `/v2/vaults/<id>` | GET / PUT | session, member | the vault blob, as `/vault/<user>` (PUT: owner or editor; it must be a PMV3 file naming this vault) |
 | `/v2/vaults/<id>/meta` | GET | session, member | its metadata |
@@ -319,6 +319,10 @@ like a 2.x one, with the same revision, `If-Match` and history rules.
 | `/v2/vaults/<id>` | DELETE | session, owner | delete the vault (not the personal one, which goes with the account); it disappears for every member |
 | `/v2/me/signing-key` | PUT | session | set the public key the account signs its changes with: `{signing_key}`, 32 bytes in base64. Once only: the same key again is **200**, another one **409**, a wrong length **400** |
 | `/v2/accounts/<user>/public-key` | GET | session | another account's public key and signing key, and its name as the server spells it (the lookup ignores letter case). **404** for an unknown name |
+| `/v2/recovery/<user>` | GET | anyone | the account's recovery copy: `{username, recovery}`, with the name as the server spells it (the lookup ignores letter case). A name with no account, or a disabled one, gets a made-up, stable copy of the same shape. **400** for an invalid name |
+| `/v2/recovery` | POST | anyone | recover the account: `{username, recovery_proof, login_key, keyset, recovery}`. **200** with the right proof; **401** for a wrong proof, an unknown name or a disabled account (the same message); **409** when the account has no proof stored yet; **400** for a bad input (a proof or Login Key that is not 32 bytes, a keyset that is a recovery copy or the other way round); **429** when the name is paused |
+| `/v2/me/recovery-proof` | PUT | session | store the recovery proof (hashed): `{recovery_proof}`, 32 bytes in base64. Once only: the same proof again is **200**, another one **409**, a wrong length or bad base64 **400** |
+| `/v2/me/recovery` | PUT | session | a new 12-word phrase: `{recovery}`, the keyset sealed under it. **400** if it is not a recovery copy (kdf byte 0); the old phrase then opens nothing |
 | `/v2/vaults/<id>/members` | GET | session, member | who is in the vault: `key_generation` and a list of `{username, role, added_by, added_at}`, sorted by name |
 | `/v2/vaults/<id>/members/<user>` | PUT | session, owner | add a member or change a role: `{role, wrapped_key}`. `role` is `owner`, `editor` or `reader`; `wrapped_key` is needed for a new member and ignored for an existing one. **400** for a bad role or key or for a personal vault, **404** for an unknown account, **403** past 50 members, **409** when it would leave the vault without an owner |
 | `/v2/vaults/<id>/members/<user>` | DELETE | session, yourself | leave the vault. **409** for its only owner. Anyone else is removed with `rotate` (an owner who tries this gets **400**) |
@@ -386,7 +390,38 @@ server never learns of it. A log file that reaches 2 MB is renamed to
 cannot be written (a full disk, say), the request it belongs to still
 succeeds and the line is missing. A name with a space in it (`ann lee`) works
 in paths when it is sent percent-encoded (`ann%20lee`). `/health` now lists
-`"features": ["vaults", "sharing"]`.
+`"features": ["vaults", "sharing", "recovery"]`.
+
+Server **2.0.0-alpha.4** lets an account be **recovered with its 12-word
+phrase** when the master password is forgotten. It goes with the Windows
+3.0.0-alpha.7 and Linux 1.0.0-alpha.7 test versions.
+
+- The device asks `GET /v2/recovery/<user>` and gets the recovery copy: the
+  account's keyset sealed under the phrase. It opens only with the phrase, so
+  handing it to anyone is safe. For a name with no account the server returns
+  a made-up copy (the same on every ask, the same shape and size), so the
+  call cannot be used to find out which names exist.
+- The device opens the copy with the phrase and proves it by sending a
+  **recovery proof**, a value derived from the account's own keys. The server
+  keeps only a salted hash of it, as it does for the Login Key. A new phrase
+  does not change the keys, so it does not change the proof.
+- An account made by 2.0.0-alpha.4 sends the proof at sign-up. An older
+  account sends it once, from a session, at its next sync
+  (`PUT /v2/me/recovery-proof`); it cannot be replaced afterwards. Until then
+  `can_recover` in `/v2/me` is false and a recovery answers **409**.
+- With the right proof, `POST /v2/recovery` stores the same keys under the new
+  password (a new keyset and Login Key) and under a new phrase (a new
+  recovery copy), and **ends every session of the account**. The old Login Key
+  stops working. A wrong proof changes nothing.
+- A new phrase can also be set from a session, without recovering
+  (`PUT /v2/me/recovery`). The server checks only that it is a recovery copy.
+- Wrong proofs are counted with wrong logins: they share one count per name,
+  so after 10 wrong tries in 15 minutes of either kind, both a login and a
+  recovery for that name answer **429** for a minute. A successful login or
+  recovery clears the count.
+- `_v2/logins.log` gets `account_recovered`, `recovery_failed` (with the
+  status) and `recovery_phrase_changed` lines. They never hold the proof, the
+  Login Key or the copy.
 
 Everything v2 keeps is in `_v2/` inside the vault store (a 2.x name cannot
 start with `_`), so backing up the store backs it up too: `accounts/`,
