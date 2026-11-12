@@ -143,7 +143,7 @@ def small_lockout(monkeypatch):
 
 def test_health_lists_vaults_sharing_and_recovery(server):
     _, _, body = server.request("GET", "/health", token=None)
-    assert body["features"] == ["vaults", "sharing", "recovery"]
+    assert body["features"] == ["vaults", "sharing", "recovery", "signed-keys"]
 
 
 # --- sign-up with a proof ----------------------------------------------------

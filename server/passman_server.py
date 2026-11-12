@@ -260,6 +260,21 @@ MAX_VAULTS_PER_ACCOUNT = 50
 #: version, a one-off X25519 public key, a nonce, the key and its tag.
 WRAPPED_KEY_LEN = 1 + 32 + 12 + 32 + 16
 
+#: With each wrapped key comes a signature by the account that wrapped it
+#: (Ed25519, 64 bytes). A device accepts a vault key only with a signature
+#: from itself or from someone it knows -- so a dishonest server cannot hand
+#: out a key of its own making and read what is then uploaded under it. The
+#: server only keeps and returns the signature; the devices check it.
+KEY_SIG_LEN = 64
+
+
+def _key_sig(value):
+    """An optional key signature as stored ("" when none came)."""
+    if value is None or value == "":
+        return ""
+    return _b64(_unb64(value, "The key's signature", KEY_SIG_LEN))
+
+
 #: A vault's name arrives sealed under the vault's key, so the server cannot
 #: read it: a nonce, the name (up to 200 bytes) and a tag.
 MIN_SEALED_NAME = 12 + 1 + 16
@@ -612,6 +627,8 @@ class AccountStore:
         if view["kind"] != "personal":
             view["name"] = members.get("name", "")
             view["wrapped_key"] = member.get("wrapped_key", "")
+            view["key_sig"] = member.get("key_sig", "")
+            view["key_signer"] = member.get("key_signer", "")
         return view
 
     def me(self, username: str) -> dict:
@@ -805,6 +822,7 @@ class AccountStore:
         name = self._sealed_name(body)
         wrapped = _b64(_unb64(body.get("wrapped_key"), "The vault key",
                               WRAPPED_KEY_LEN))
+        key_sig = _key_sig(body.get("key_sig"))
         with _lock:
             record = self.account(username)
             mine = list(record.get("vaults", []))
@@ -819,7 +837,9 @@ class AccountStore:
             self._write_json(self._members_path(vault_id), {
                 "kind": "shared", "created_at": utc_now(),
                 "created_by": username, "name": name, "key_generation": 0,
-                "members": {username: {"role": "owner", "wrapped_key": wrapped}}})
+                "members": {username: {"role": "owner", "wrapped_key": wrapped,
+                                       "key_sig": key_sig,
+                                       "key_signer": username}}})
             record["vaults"] = mine + [vault_id]
             self._write_json(self._account_path(username), record)
         return self._vault_view(username, vault_id)
@@ -911,6 +931,7 @@ class AccountStore:
                 return {"username": who, "role": role, "added": False}
             wrapped = _b64(_unb64(body.get("wrapped_key"), "The vault key",
                                   WRAPPED_KEY_LEN))
+            key_sig = _key_sig(body.get("key_sig"))
             if len(people) >= MAX_MEMBERS_PER_VAULT:
                 raise V2Error(403, f"A vault can have {MAX_MEMBERS_PER_VAULT} "
                                    "members.")
@@ -918,6 +939,7 @@ class AccountStore:
             if len(listed) >= MAX_VAULTS_LISTED:
                 raise V2Error(409, f"“{who}” is in too many vaults already.")
             people[who] = {"role": role, "wrapped_key": wrapped,
+                           "key_sig": key_sig, "key_signer": actor,
                            "added_by": actor, "added_at": utc_now()}
             self._write_json(self._members_path(vault_id), members)
             target["vaults"] = listed + [vault_id]
@@ -979,6 +1001,12 @@ class AccountStore:
                                    "meantime. Sync, then try again.")
             clean = {name: _b64(_unb64(wrapped[name], "A vault key",
                                        WRAPPED_KEY_LEN)) for name in staying}
+            sigs = body.get("key_sigs") or {}
+            if not isinstance(sigs, dict) or \
+                    (sigs and sorted(sigs) != sorted(staying)):
+                raise V2Error(400, "The keys' signatures do not match the "
+                                   "members who stay.")
+            sigs = {name: _key_sig(sigs.get(name)) for name in staying}
             name = self._sealed_name(body)
 
             current = int(self.vaults.meta(vault_id)["revision"])
@@ -1003,12 +1031,32 @@ class AccountStore:
                 del people[gone]
             for each in staying:
                 people[each]["wrapped_key"] = clean[each]
+                people[each]["key_sig"] = sigs[each]
+                people[each]["key_signer"] = actor
             members["key_generation"] = generation
             members["name"] = name
             self._write_json(self._members_path(vault_id), members)
             for gone in removed:
                 self._unlist(gone, vault_id)
         return self._vault_view(actor, vault_id)
+
+    def set_key_sig(self, username: str, vault_id: str, body: dict) -> None:
+        """
+        A member vouches for the wrapped key it already holds, for a vault
+        made before keys were signed -- so its other devices will accept
+        that key. Only while that key has no signature: one made by an
+        owner is never replaced.
+        """
+        sig = _key_sig(body.get("key_sig"))
+        if not sig:
+            raise V2Error(400, "The key's signature is missing.")
+        with _lock:
+            members = self._shared(vault_id)
+            entry = members.get("members", {}).get(username)
+            if entry.get("key_sig"):
+                raise V2Error(409, "This key is signed already.")
+            entry["key_sig"], entry["key_signer"] = sig, username
+            self._write_json(self._members_path(vault_id), members)
 
     def key_generation(self, vault_id: str) -> int:
         members = self._read_json(self._members_path(vault_id)) or {}
@@ -1101,11 +1149,12 @@ class Handler(BaseHTTPRequestHandler):
             # per account (2.0.0-alpha.2).
             # "sharing" = members, roles, key change and the audit log
             # (2.0.0-alpha.3). "recovery" = an account recovered with its
-            # 12-word phrase (2.0.0-alpha.4).
+            # 12-word phrase (2.0.0-alpha.4). "signed-keys" = a signature is
+            # kept with every wrapped vault key (2.0.0-alpha.5).
             return self._send(200, {"ok": True, "service": "passman-sync",
                                     "api": [1, 2],
                                     "features": ["vaults", "sharing",
-                                                 "recovery"]})
+                                                 "recovery", "signed-keys"]})
         if self._is_v2():
             return self._v2("GET")
 
@@ -1385,7 +1434,7 @@ class Handler(BaseHTTPRequestHandler):
             # Not a member and no such vault answer alike, so a guess at an
             # id learns nothing.
             if role is None or tail not in ("", "meta", "name", "members",
-                                            "rotate", "log"):
+                                            "rotate", "log", "key-sig"):
                 return self._error(404, "No such vault.")
             if len(parts) == 4 and tail != "members":
                 return self._error(404, "No such endpoint.")
@@ -1479,9 +1528,15 @@ class Handler(BaseHTTPRequestHandler):
             return {"run": leave, "anyone": True}
         if (method, tail, count) == ("POST", "rotate", 3):
             return {"run": body_then(rotate), "anyone": False}
+        def key_sig(accounts, vault_id, actor, address, body):
+            accounts.set_key_sig(actor, vault_id, body)
+            return self._send(200, {})
+
         if (method, tail, count) == ("GET", "log", 3):
             return {"run": log, "anyone": False}
-        if tail in ("name", "rotate", "log") or method == "DELETE" \
+        if (method, tail, count) == ("PUT", "key-sig", 3):
+            return {"run": body_then(key_sig), "anyone": True}
+        if tail in ("name", "rotate", "log", "key-sig") or method == "DELETE" \
                 or (tail == "members" and (count == 4 or method != "GET")):
             return {"run": lambda *a: self._error(404, "No such endpoint."),
                     "anyone": True}
