@@ -74,7 +74,7 @@ def bob(server):
 
 def test_health_says_the_server_has_vaults(server):
     _, _, body = server.request("GET", "/health", token=None)
-    assert body["features"] == ["vaults", "sharing", "recovery"]
+    assert body["features"] == ["vaults", "sharing", "recovery", "signed-keys"]
 
 
 # --- create --------------------------------------------------------------------
@@ -85,7 +85,8 @@ def test_a_vault_is_made_and_the_owner_is_told_about_it(server, alice):
     assert status == 201
     assert view == {"id": sent["id"], "kind": "shared", "role": "owner",
                     "revision": 0, "key_generation": 0, "members": 1,
-                    "name": sent["name"], "wrapped_key": sent["wrapped_key"]}
+                    "name": sent["name"], "wrapped_key": sent["wrapped_key"],
+                    "key_sig": "", "key_signer": "alice"}
 
 
 def test_me_lists_the_personal_vault_first_then_the_others(server, alice):

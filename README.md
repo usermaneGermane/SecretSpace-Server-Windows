@@ -23,8 +23,8 @@ rule **PassMan Sync Server**, `%ProgramData%\PassMan Server`, and the
 folder it was installed in.
 
 **Which apps it serves.** SecretSpace for Windows 2.x and SecretSpace for Linux
-0.x sync with it. The SecretSpace 3 test versions (Windows 3.0.0-alpha.7, Linux
-1.0.0-alpha.7) sync with the newest test version of the server, 2.0.0-alpha.4,
+0.x sync with it. The SecretSpace 3 test versions (Windows 3.0.0-alpha.8, Linux
+1.0.0-alpha.8) sync with the newest test version of the server, 2.0.0-alpha.5,
 through the accounts, sharing and recovery described under API v2 below.
 
 This repository is the server for **Windows**. The other parts of SecretSpace
@@ -328,6 +328,7 @@ like a 2.x one, with the same revision, `If-Match` and history rules.
 | `/v2/vaults/<id>/members/<user>` | DELETE | session, yourself | leave the vault. **409** for its only owner. Anyone else is removed with `rotate` (an owner who tries this gets **400**) |
 | `/v2/vaults/<id>/rotate` | POST | session, owner | change the vault's key, and remove members in the same call: `{generation, remove, wrapped_keys, name, blob, revision}` (see below) |
 | `/v2/vaults/<id>/log` | GET | session, owner | the vault's log: `{lines}`, oldest first, the newest 200 |
+| `/v2/vaults/<id>/key-sig` | PUT | session, member | sign the wrapped key you already hold: `{key_sig}`, 64 bytes in base64. Only while that key has no signature (**409** otherwise) |
 
 Sessions are sent as `Authorization: Bearer <session>`. The server's token
 is not a session and opens no account; a session opens no 2.x vault. A vault
@@ -391,6 +392,31 @@ cannot be written (a full disk, say), the request it belongs to still
 succeeds and the line is missing. A name with a space in it (`ann lee`) works
 in paths when it is sent percent-encoded (`ann%20lee`). `/health` now lists
 `"features": ["vaults", "sharing", "recovery"]`.
+
+Server **2.0.0-alpha.5** keeps a **signature with every wrapped vault key**.
+It goes with the Windows 3.0.0-alpha.8 and Linux 1.0.0-alpha.8 test versions,
+which sync only the Personal vault with an older server.
+
+- *Why.* The server stores each member's copy of a vault key but must never
+  be able to choose one. Before this version a dishonest server (or someone
+  who broke into it) could wrap a key of its own to a member's public key and
+  call it a new key generation; the device would then upload the vault under
+  that key, and the server could read it.
+- *How.* The account that wraps a key signs it (Ed25519): which vault, which
+  key generation, for whom, the wrapped key itself. `key_sig` travels with
+  `wrapped_key` in `POST /v2/vaults`, in `PUT /v2/vaults/<id>/members/<user>`
+  for a new member, and as `key_sigs` (one per member who stays) in `rotate`.
+  `/v2/me` returns `key_sig` and `key_signer` with each vault.
+- *Who checks.* The devices, not the server: it has no key to check with and
+  needs none. A device takes a key only when it is signed by its own account
+  or by someone it has reason to trust, and never one of an older generation.
+- `key_signer` is always the account whose session sent the key, never a
+  name from the request.
+- A vault from an earlier version has unsigned keys. A device that already
+  holds such a key signs it at its next sync (`PUT /v2/vaults/<id>/key-sig`),
+  after which the account's other devices take it. A signature made by an
+  owner is never replaced this way.
+- `/health` lists `"signed-keys"`.
 
 Server **2.0.0-alpha.4** lets an account be **recovered with its 12-word
 phrase** when the master password is forgotten. It goes with the Windows
