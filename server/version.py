@@ -11,7 +11,7 @@ A test version carries a pre-release tag, ``2.0.0-alpha.2``.
 
 import re
 
-__version__ = "2.0.0-alpha.5"
+__version__ = "2.0.0"
 
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-(?:alpha|beta|rc)\.(\d+))?")
 
