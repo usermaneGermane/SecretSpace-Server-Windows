@@ -20,14 +20,14 @@ from dataclasses import dataclass, field
 
 #: Files the build reads. If one is missing, the folder is incomplete.
 REQUIRED_FILES = (
-    os.path.join("server", "passman_server.py"),
-    os.path.join("server", "passman_setup.py"),
-    os.path.join("server", "passman_server_exe.py"),
-    os.path.join("server", "passman_server_setup_exe.py"),
-    os.path.join("server", "PassMan-Server.spec"),
+    os.path.join("server", "secretspace_server.py"),
+    os.path.join("server", "secretspace_setup.py"),
+    os.path.join("server", "secretspace_server_exe.py"),
+    os.path.join("server", "secretspace_server_setup_exe.py"),
+    os.path.join("server", "SecretSpace-Server.spec"),
     os.path.join("server", "version.py"),
     os.path.join("server", "build_version.py"),
-    os.path.join("server", "PassMan-logo.ico"),
+    os.path.join("server", "SecretSpace-logo.ico"),
     os.path.join("installer", "SecretSpace-Server.iss"),
 )
 
@@ -178,8 +178,8 @@ def check_all(project: str, runner=run, find_iscc=find_iscc) -> list:
         if not gone:
             src = os.path.join(project, "server")
             imp = runner(py.cmd + ["-c", "import sys; sys.path.insert(0, "
-                                   f"{src!r}); import passman_server_exe, "
-                                   "passman_server_setup_exe"])
+                                   f"{src!r}); import secretspace_server_exe, "
+                                   "secretspace_server_setup_exe"])
             last = imp.output.strip().splitlines()[-1:] or [""]
             checks.append(Check(
                 "The server imports cleanly", imp.code == 0,
@@ -230,13 +230,10 @@ def remove_previous(project: str) -> None:
     """Delete the old outputs first, so a failed build cannot look like a
     successful one because last time's files are still there."""
     import shutil
-    # PassMan-Server-Installer.exe is the name from before the rename to
-    # SecretSpace: removed too, so it cannot pass for a current build.
-    for name in ("SecretSpace-Server-Installer.exe", "PassMan-Server-Installer.exe"):
-        path = os.path.join(project, name)
-        if os.path.exists(path):
-            os.remove(path)
-    folder = os.path.join(project, "build", "server", "PassMan-Server")
+    path = os.path.join(project, "SecretSpace-Server-Installer.exe")
+    if os.path.exists(path):
+        os.remove(path)
+    folder = os.path.join(project, "build", "server", "SecretSpace-Server")
     if os.path.isdir(folder):
         shutil.rmtree(folder)
 
@@ -263,9 +260,9 @@ def build_steps(project: str, py: "Python", iscc: str, version: str) -> list:
                    "--distpath", os.path.join(project, "build", "server"),
                    "--workpath", os.path.join(project, "build",
                                               "server-work"),
-                   os.path.join(project, "server", "PassMan-Server.spec")],
-         os.path.join(project, "build", "server", "PassMan-Server",
-                      "PassMan-Server.exe")),
+                   os.path.join(project, "server", "SecretSpace-Server.spec")],
+         os.path.join(project, "build", "server", "SecretSpace-Server",
+                      "SecretSpace-Server.exe")),
         ("Packing SecretSpace-Server-Installer.exe",
          [iscc, "/Q", f"/DAppVersion={version}",
           f"/DFileVersion={file_version(version)}",

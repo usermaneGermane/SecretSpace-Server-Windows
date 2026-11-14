@@ -29,6 +29,6 @@ jobs:
       - name: Both programs import
         # PyInstaller builds a broken exe rather than failing when a module
         # is missing, so check the same thing the builder checks.
-        run: python -c "import sys; sys.path.insert(0, 'server'); import passman_server_exe, passman_server_setup_exe"
+        run: python -c "import sys; sys.path.insert(0, 'server'); import secretspace_server_exe, secretspace_server_setup_exe"
       - name: Run the tests
         run: python -m pytest -q

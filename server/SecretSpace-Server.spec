@@ -3,8 +3,8 @@
 # The Windows server's program folder, which SecretSpace-Server-Installer.exe
 # ships. Two console programs sharing one _internal\ folder:
 #
-#   PassMan-Server.exe        the server; the startup task runs it
-#   PassMan-Server-Setup.exe  network, port and token; installs nothing
+#   SecretSpace-Server.exe        the server; the startup task runs it
+#   SecretSpace-Server-Setup.exe  network, port and token; installs nothing
 #
 # A folder build, not a single file, because a scheduled task should not
 # unpack itself to %TEMP% on every boot. Standard library only, so it is
@@ -16,7 +16,7 @@ SERVER = SPECPATH
 sys.path.insert(0, SERVER)
 from build_version import version_info   # Properties > Details
 
-ICON = [os.path.join(SERVER, 'PassMan-logo.ico')]
+ICON = [os.path.join(SERVER, 'SecretSpace-logo.ico')]
 # Nothing graphical: keep the GUI toolkits out even if installed.
 EXCLUDES = ['tkinter', 'customtkinter', 'PIL']
 
@@ -33,10 +33,10 @@ def program(script, name, description):
     return a, exe
 
 
-server_a, server_exe = program('passman_server_exe.py', 'PassMan-Server',
+server_a, server_exe = program('secretspace_server_exe.py', 'SecretSpace-Server',
                                'SecretSpace sync server')
-setup_a, setup_exe = program('passman_server_setup_exe.py',
-                             'PassMan-Server-Setup',
+setup_a, setup_exe = program('secretspace_server_setup_exe.py',
+                             'SecretSpace-Server-Setup',
                              'SecretSpace sync server setup')
 
 coll = COLLECT(
@@ -46,5 +46,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='PassMan-Server',
+    name='SecretSpace-Server',
 )

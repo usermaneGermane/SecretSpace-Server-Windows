@@ -13,26 +13,25 @@ your PC.
 It needs no Python: the installer brings everything with it.
 
 **Formerly PassMan.** The project was renamed to SecretSpace in November
-2026, because another password manager already uses the name PassMan. The
-installer (`SecretSpace-Server-Installer.exe`), its entry in Settings → Apps
-and the Start Menu folder carry the new name. What a running server is made
-of keeps its name, so an upgrade finds and replaces it: the programs
-`PassMan-Server.exe` and `PassMan-Server-Setup.exe`, the task and firewall
-rule **PassMan Sync Server**, `%ProgramData%\PassMan Server`, and the
-`X-PassMan-*` headers of the sync protocol. An upgrade keeps the program
-folder it was installed in.
+2026, because another password manager already uses the name PassMan. Since
+2.1.0 everything a server is made of carries the new name too: its two
+programs, its task and firewall rule, its data folder and its settings.
+Installing 2.1.0 over an older server moves all of that by itself and
+changes neither the port, the token nor the vaults: see
+[Upgrading a server from before 2.1.0](#upgrading-a-server-from-before-210).
 
-**Which apps it serves.** Server **2.0.0** serves both lines of the app:
+**Which apps it serves.** Server **2.1.0** serves every line of the app:
 
-- **SecretSpace 3** (Windows 3.0.0, Linux 1.0.0 and later): accounts with
-  several vaults, sharing and recovery, through the routes under *API v2*
-  below.
+- **SecretSpace 4** (Windows 4.0.0, Linux 2.0.0): accounts and vaults in the
+  current format. It needs this version of the server.
+- **SecretSpace 3** (Windows 3.x, Linux 1.x): the same accounts in the
+  format from before the rename, through the same routes (*API v2* below).
+  An account is converted by its owner's own app, when they update it; the
+  server keeps both forms side by side until then.
 - **SecretSpace 2.x** (Windows 2.x, Linux 0.x): one vault per user, through
   the token routes, exactly as server 1.x did.
 
-Updating from 1.x changes nothing for 2.x apps: the same store, token and
-settings. SecretSpace 3 needs this version; it does not sync with a 1.x
-server.
+Upgrading changes nothing for the apps: the same store, token and settings.
 
 This repository is the server for **Windows**. The other parts of SecretSpace
 have their own repositories:
@@ -68,15 +67,15 @@ PCs — or both on one PC.
 | File | What it does |
 |---|---|
 | `SecretSpace-Server-Installer.exe` | **installs** (or upgrades) the server — the download |
-| `PassMan-Server.exe` | **is** the server; the startup task runs it, you never need to |
-| `PassMan-Server-Setup.exe` | **changes the settings** — network, port, token. Installs and unpacks nothing |
+| `SecretSpace-Server.exe` | **is** the server; the startup task runs it, you never need to |
+| `SecretSpace-Server-Setup.exe` | **changes the settings** — network, port, token. Installs and unpacks nothing |
 
 ## Install
 
 1. **Run `SecretSpace-Server-Installer.exe`** and allow it to make changes (it
    installs for the whole machine). It is not code-signed, so SmartScreen
    may warn first: **More info → Run anyway**. Near the end it runs
-   `PassMan-Server-Setup.exe` in a console window, which asks two things:
+   `SecretSpace-Server-Setup.exe` in a console window, which asks two things:
    - **Which network to listen on.** It lists this PC's networks. Press
      Enter for the default, **every network** (`0.0.0.0`): it works on a
      LAN and behind a VPN at once, and does not care which network comes up
@@ -91,10 +90,10 @@ The setup did the rest:
 
 | What | Where |
 |---|---|
-| the programs | `C:\Program Files\SecretSpace Server\` (`PassMan-Server.exe`, `PassMan-Server-Setup.exe`) |
+| the programs | `C:\Program Files\SecretSpace Server\` (`SecretSpace-Server.exe`, `SecretSpace-Server-Setup.exe`) |
 | settings, token, vaults, log | `C:\ProgramData\SecretSpace Server\` (`sync.env`, `token`, `store\`, `logs\server.log`) |
-| starts with Windows, nobody logged in | Task Scheduler → **PassMan Sync Server**, as LOCAL SERVICE |
-| firewall | Windows Defender Firewall → inbound rule **PassMan Sync Server (TCP *port*)**, open to the networks this PC is on (or just the one you picked) |
+| starts with Windows, nobody logged in | Task Scheduler → **SecretSpace Sync Server**, as LOCAL SERVICE |
+| firewall | Windows Defender Firewall → inbound rule **SecretSpace Sync Server (TCP *port*)**, open to the networks this PC is on (or just the one you picked) |
 
 The token is readable by administrators and the server only. It is never
 passed on the command line, which every user on the machine can read.
@@ -107,7 +106,7 @@ SecretSpace-Server-Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /HOST=0.0.0.0 /PO
 
 ## Connect SecretSpace
 
-Get the token: double-click `PassMan-Server-Setup.exe` and choose **Show the
+Get the token: double-click `SecretSpace-Server-Setup.exe` and choose **Show the
 token**, or use the Start Menu shortcut of the same name.
 
 **First PC (SecretSpace 2.x):** unlock your vault, open **Settings → Sync**, enter the address
@@ -134,7 +133,7 @@ records usernames and status codes — never the vault, never the token.
 
 ## Changing the network, port or token
 
-That is `PassMan-Server-Setup.exe`'s job. Double-click it (it asks for
+That is `SecretSpace-Server-Setup.exe`'s job. Double-click it (it asks for
 administrator rights) and it shows where the server listens now, then:
 
 ```
@@ -150,7 +149,7 @@ a shortcut for each, and one to open the **server log**. From an
 administrator terminal, each one directly:
 
 ```
-"C:\Program Files\SecretSpace Server\PassMan-Server-Setup.exe" setup | show-token | new-token
+"C:\Program Files\SecretSpace Server\SecretSpace-Server-Setup.exe" setup | show-token | new-token
 ```
 
 For a script, skip the questions: `… setup --host 0.0.0.0 --port 9443`.
@@ -180,9 +179,35 @@ Run the newer `SecretSpace-Server-Installer.exe`. It stops the server, replaces
 the program files, keeps the network, port and token without asking, and
 starts the server again — it is not the way to change the port.
 
-**Upgrade the server before changing a master password** in SecretSpace. The
-server records how many times each vault's password has changed; an older
-server does not, and after a second change it can send a PC the wrong way.
+**Upgrade the server before the apps.** SecretSpace 4 does not sync with a
+server older than 2.1.0, and a master password should not be changed
+against a server older than the app.
+
+## Upgrading a server from before 2.1.0
+
+Up to 2.0.0 a server carried the project's old name inside: the programs
+`PassMan-Server.exe` and `PassMan-Server-Setup.exe`, the task and firewall
+rule *PassMan Sync Server*, and its data in `%ProgramData%\PassMan Server`.
+
+Run `SecretSpace-Server-Installer.exe` 2.1.0 as for any upgrade. It does the
+move by itself:
+
+- the two old programs and the old Start Menu folder are removed;
+- `%ProgramData%\PassMan Server` is moved to `%ProgramData%\SecretSpace
+  Server` (the same disk, so nothing is copied);
+- the old task and firewall rule are removed and made again as
+  *SecretSpace Sync Server*, with the same network, port and extra
+  addresses;
+- the settings file gets the current names of its keys.
+
+**The port, the token and the vaults do not change**, so no PC needs a new
+setting, and SecretSpace 2.x and 3 apps keep syncing as before. Afterwards
+`curl.exe http://127.0.0.1:8787/health` (with your port) names
+`"service": "secretspace-sync"` and lists `"format-2"` among its features.
+
+If something has the old data folder open, the installer stops and says so;
+close it and run the installer again. The way back is the 2.0.0 installer
+and renaming the data folder back by hand.
 
 ## Uninstalling
 
@@ -195,12 +220,12 @@ Delete that folder yourself if you are sure.
 **Start here if a PC cannot connect.** Check the server side first — most
 failures are simply that nothing is running:
 
-- Task Scheduler → **PassMan Sync Server** should be *Running*.
+- Task Scheduler → **SecretSpace Sync Server** should be *Running*.
 - The server log (Start Menu → SecretSpace Server → Server log) says why it
   stopped, if it did.
 - On the server itself, in PowerShell:
   `curl.exe http://127.0.0.1:8787/health` should answer
-  `{"ok": true, "service": "passman-sync"}`. (Use `curl.exe` — plain `curl`
+  `{"ok": true, "service": "secretspace-sync"}`. (Use `curl.exe` — plain `curl`
   in PowerShell is an alias for something else. If the server listens on
   one network only, use that address instead of `127.0.0.1`.)
 
@@ -214,7 +239,7 @@ dropping it.
 | Symptom | Likely cause |
 |---|---|
 | Task not running; local `curl.exe` refused | Start it in Task Scheduler, then read the server log if it will not stay up |
-| `curl.exe` works on the server but not from a PC | The firewall rule: check **PassMan Sync Server** in Windows Defender Firewall covers the PC's network, or run the setup again |
+| `curl.exe` works on the server but not from a PC | The firewall rule: check **SecretSpace Sync Server** in Windows Defender Firewall covers the PC's network, or run the setup again |
 | PC and server on different networks | Compare `ipconfig` on both; a VPN address and a LAN address are not the same network |
 | Server log: an address this PC no longer has | The network changed. Run the setup and pick again — every network (`0.0.0.0`) avoids this |
 | `Address already in use` in the log | Something else on the port. Pick another port in the setup |
@@ -294,9 +319,9 @@ Every route but `/health` needs `Authorization: Bearer <token>`.
 `PUT` takes `{"blob": "<base64>"}` and requires `If-Match: <revision>` — the
 revision you merged against. Two optional headers:
 
-- `X-PassMan-Key-Generation: <n>` — how many times the vault's master
+- `X-SecretSpace-Key-Generation: <n>` — how many times the vault's master
   password has changed. Stored as-is; kept unchanged when absent.
-- `X-PassMan-Drop-History: 1` — discard every earlier revision, including
+- `X-SecretSpace-Drop-History: 1` — discard every earlier revision, including
   the one being replaced. Sent after a password change.
 
 The server replies:
@@ -308,7 +333,34 @@ The server replies:
 A first push may omit `If-Match`. `If-Match: *` overwrites whatever is there,
 which the client never sends — it exists for recovering by hand.
 
-### API v2: SecretSpace 3 accounts
+### Two formats, side by side (2.1.0)
+
+SecretSpace 4 writes accounts and vaults in a new format (the same
+cryptography; new markers and labels, which no longer carry the project's
+old name). The server cannot read either, but it can tell them apart by
+their first four bytes, and it keeps a few rules so that nobody is locked
+out by someone else's update:
+
+- An account's **format** is 1 until its app sends its keyset in the new
+  form (`PUT /v2/me/keyset`), then 2. `GET /v2/me` and the members list of
+  a vault say which. **A converted account never goes back**: a device that
+  still sends the old form is told to update.
+- A **vault** is stored in the new form only when every member's account
+  is converted. Until then it stays in the old form, and every member,
+  converted or not, reads and writes it that way.
+- Once a vault is stored in the new form it takes no upload in the old one,
+  and no new member whose account is not converted.
+- The recovery copy may stay in the old form after a conversion: it opens
+  only with the 12 words, so the app converts it when the owner types them.
+- `/health` lists the feature `"format-2"`.
+
+The names from before the rename are still **read**, never written: the
+headers `X-PassMan-Key-Generation` / `X-PassMan-Drop-History` from older
+apps, and `PASSMAN_HOST` / `PASSMAN_PORT` / `PASSMAN_TOKEN` in the
+environment or an older settings file. They will go together with the 2.x
+routes in a later major version.
+
+### API v2: accounts
 
 Server **2.0** adds accounts for SecretSpace 3 (Windows 3.0.0, Linux
 1.0.0). The paragraphs below name the test version in which each part
@@ -351,7 +403,7 @@ you are not a member of answers 404, the same as one that does not exist.
 
 Server **2.0.0-alpha.2** lets an account hold **several vaults**: the
 personal one, which every account has, and up to **50** more (`MAX_VAULTS_PER_ACCOUNT`
-in `passman_server.py`). The client makes a vault's id and key. A vault's
+in `secretspace_server.py`). The client makes a vault's id and key. A vault's
 name arrives sealed under that key and the key arrives wrapped to the owner's
 public key, so the server can read neither; it only stores them and hands
 them back in `/v2/me`, where the personal vault comes first. A deleted vault is
@@ -490,7 +542,7 @@ Each history file stays encrypted with the master password in use when it was
 written. When you change a master password, SecretSpace offers to delete them —
 ticked by default — since they would still open with the old one.
 
-History is server-side undo. To roll back: stop **PassMan Sync Server** in
+History is server-side undo. To roll back: stop **SecretSpace Sync Server** in
 Task Scheduler, copy the revision you want over `vault.enc`, delete
 `meta.json` so the numbering restarts, and start the task again. Every
 client then sees a revision it did not expect and re-merges, which is the
@@ -540,11 +592,11 @@ SecretSpace-Server-Windows/
 ├── builder/                     build.py: checks, then builds the installer
 ├── installer/SecretSpace-Server.iss the Inno Setup script
 └── server/
-    ├── passman_server.py        the server (standard library only)
-    ├── passman_setup.py         network, port, token, the task, the firewall rule
-    ├── passman_server_exe.py    → PassMan-Server.exe
-    ├── passman_server_setup_exe.py → PassMan-Server-Setup.exe
-    ├── PassMan-Server.spec      the PyInstaller build of both programs
+    ├── secretspace_server.py        the server (standard library only)
+    ├── secretspace_setup.py         network, port, token, the task, the firewall rule
+    ├── secretspace_server_exe.py    → SecretSpace-Server.exe
+    ├── secretspace_server_setup_exe.py → SecretSpace-Server-Setup.exe
+    ├── SecretSpace-Server.spec      the PyInstaller build of both programs
     ├── version.py               the version
     └── build_version.py         the exes' version resource
 ```
@@ -567,11 +619,11 @@ for every pull request and every push to `main`.
 bodies, the history limit and the access log. It is the same file in
 SecretSpace-Server-Linux.
 
-`server/passman_server.py` and `server/passman_setup.py` are the same files
-as in SecretSpace-Server-Linux — `passman_setup.py` holds the setup for both
+`server/secretspace_server.py` and `server/secretspace_setup.py` are the same files
+as in SecretSpace-Server-Linux — `secretspace_setup.py` holds the setup for both
 systems. Make a change to either in both repositories, so the two servers
 never drift apart. SecretSpace-Client-Windows and SecretSpace-Client-Linux each keep
-a copy of `passman_server.py` for their end-to-end sync tests; refresh
+a copy of `secretspace_server.py` for their end-to-end sync tests; refresh
 those too.
 
 ## License

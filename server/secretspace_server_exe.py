@@ -1,15 +1,15 @@
 """
-PassMan-Server.exe -- the Windows sync server itself.
+SecretSpace-Server.exe -- the Windows sync server itself.
 
-The startup task runs it with the settings PassMan-Server-Setup.exe chose:
+The startup task runs it with the settings SecretSpace-Server-Setup.exe chose:
 
-    PassMan-Server.exe --host ... --port ... --store ... --token-file ...
+    SecretSpace-Server.exe --host ... --port ... --store ... --token-file ...
 
-To change the network, the port or the token, use PassMan-Server-Setup.exe
+To change the network, the port or the token, use SecretSpace-Server-Setup.exe
 (Start Menu -> SecretSpace Server). This program still accepts the setup
 commands (setup, new-token, show-token, remove) and hands them over, because
 an installation made before the two were split uninstalls with
-`PassMan-Server.exe remove`.
+`SecretSpace-Server.exe remove`.
 """
 
 import os
@@ -17,11 +17,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import passman_setup                                            # noqa: E402
-import passman_server                                           # noqa: E402
+import secretspace_setup                                            # noqa: E402
+import secretspace_server                                           # noqa: E402
 
 USAGE = ("This is the server that the startup task runs. To change its "
-         "network, port or token, run PassMan-Server-Setup.exe (Start Menu "
+         "network, port or token, run SecretSpace-Server-Setup.exe (Start Menu "
          "-> SecretSpace Server).")
 
 
@@ -34,15 +34,15 @@ def main(argv=None):
         input("\nPress Enter to close this window.")
         return
     # No server option takes a value that is also a command name.
-    if any(a in passman_setup.COMMANDS for a in argv):
+    if any(a in secretspace_setup.COMMANDS for a in argv):
         if getattr(sys, "frozen", False) \
-                and not passman_setup.is_admin("windows"):
-            if not passman_setup.relaunch_as_admin(argv):
+                and not secretspace_setup.is_admin("windows"):
+            if not secretspace_setup.relaunch_as_admin(argv):
                 sys.exit("This needs administrator rights.")
             return
-        passman_setup.main(argv)
+        secretspace_setup.main(argv)
         return
-    passman_server.main(argv)
+    secretspace_server.main(argv)
 
 
 if __name__ == "__main__":

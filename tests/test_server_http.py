@@ -26,7 +26,7 @@ import pytest
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server"))
 
-import passman_server                                           # noqa: E402
+import secretspace_server                                           # noqa: E402
 
 TOKEN = "test-token-that-is-long-enough"
 
@@ -84,9 +84,9 @@ class Server:
 @pytest.fixture
 def server(tmp_path):
     """A real ThreadingHTTPServer on a free port, torn down after the test."""
-    httpd = passman_server.ThreadingHTTPServer(
-        ("127.0.0.1", 0), passman_server.Handler)
-    httpd.store = passman_server.Store(str(tmp_path / "store"))
+    httpd = secretspace_server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), secretspace_server.Handler)
+    httpd.store = secretspace_server.Store(str(tmp_path / "store"))
     httpd.token = TOKEN
     os.makedirs(httpd.store.root, exist_ok=True)
     # serve_forever notices shutdown() only between polls; the default half
@@ -107,8 +107,9 @@ def server(tmp_path):
 def test_health_answers_without_a_token(server):
     status, _, body = server.request("GET", "/health", token=None)
     assert status == 200
-    assert body == {"ok": True, "service": "passman-sync", "api": [1, 2],
-                    "features": ["vaults", "sharing", "recovery", "signed-keys"]}
+    assert body == {"ok": True, "service": "secretspace-sync", "api": [1, 2],
+                    "features": ["vaults", "sharing", "recovery", "signed-keys",
+                                 "format-2"]}
 
 
 @pytest.mark.parametrize("header", [
@@ -314,13 +315,13 @@ def test_two_pushes_racing_for_one_revision_cannot_both_win(server,
     check before either had written -- and one PC's changes would vanish.
     """
     server.push("alice", VAULT_1)
-    real_write = passman_server.Store.write
+    real_write = secretspace_server.Store.write
 
     def slow_write(self, *args, **kwargs):
         time.sleep(0.3)
         return real_write(self, *args, **kwargs)
 
-    monkeypatch.setattr(passman_server.Store, "write", slow_write)
+    monkeypatch.setattr(secretspace_server.Store, "write", slow_write)
 
     results = []
     start = threading.Barrier(2)
@@ -379,7 +380,7 @@ def test_a_nonsense_content_length_is_refused(server):
 def test_a_body_larger_than_any_vault_is_refused_unread(server):
     """Refused on the declared length alone, before reading a byte of it."""
     status, _, payload = raw_put(server, b"",
-                                 content_length=passman_server.MAX_BODY + 1)
+                                 content_length=secretspace_server.MAX_BODY + 1)
     assert status == 413
     assert server.store.exists("alice") is False
 
@@ -404,7 +405,7 @@ def test_each_push_keeps_the_revision_it_replaces(server):
 
 
 def test_only_the_newest_revisions_are_kept(server, monkeypatch):
-    monkeypatch.setattr(passman_server, "HISTORY_LIMIT", 3)
+    monkeypatch.setattr(secretspace_server, "HISTORY_LIMIT", 3)
     server.push("alice", VAULT_1)
     for revision in range(1, 6):
         status, _, _ = server.push("alice", VAULT_2, if_match=str(revision))
@@ -430,7 +431,7 @@ def test_drop_history_clears_every_earlier_revision(server):
     server.push("alice", VAULT_1, if_match="2")
     assert len(server.history("alice")) == 2
     status, _, meta = server.push("alice", VAULT_2, if_match="3",
-                                  **{"X-PassMan-Drop-History": "1"})
+                                  **{"X-SecretSpace-Drop-History": "1"})
     assert status == 200 and meta["revision"] == 4
     assert server.history("alice") == []      # not even revision 3 is kept
     assert server.store.read("alice") == VAULT_2.encode()
@@ -439,7 +440,7 @@ def test_drop_history_clears_every_earlier_revision(server):
 def test_drop_history_only_means_1(server):
     server.push("alice", VAULT_1)
     server.push("alice", VAULT_2, if_match="1",
-                **{"X-PassMan-Drop-History": "yes"})
+                **{"X-SecretSpace-Drop-History": "yes"})
     assert server.history("alice") == ["00000001.enc"]
 
 
@@ -447,12 +448,12 @@ def test_drop_history_only_means_1(server):
 
 def test_a_key_generation_is_stored_and_kept_until_changed(server):
     _, _, meta = server.push("alice", VAULT_1,
-                             **{"X-PassMan-Key-Generation": "2"})
+                             **{"X-SecretSpace-Key-Generation": "2"})
     assert meta["key_generation"] == 2
     _, _, meta = server.push("alice", VAULT_2, if_match="1")   # header left out
     assert meta["key_generation"] == 2
     _, _, meta = server.push("alice", VAULT_1, if_match="2",
-                             **{"X-PassMan-Key-Generation": "3"})
+                             **{"X-SecretSpace-Key-Generation": "3"})
     assert meta["key_generation"] == 3
     _, _, pulled = server.pull("alice")
     assert pulled["key_generation"] == 3
@@ -461,9 +462,9 @@ def test_a_key_generation_is_stored_and_kept_until_changed(server):
 @pytest.mark.parametrize("generation", ["-1", "two", "1.5", ""])
 def test_a_nonsense_key_generation_is_refused(server, generation):
     status, _, body = server.push("alice", VAULT_1,
-                                  **{"X-PassMan-Key-Generation": generation})
+                                  **{"X-SecretSpace-Key-Generation": generation})
     assert status == 400
-    assert "Key-Generation" in body["error"]
+    assert "key generation" in body["error"]
     assert server.store.exists("alice") is False
 
 
@@ -479,7 +480,7 @@ def test_the_log_names_the_request_but_never_the_body_or_token(server,
 
 
 def test_the_log_leaves_out_the_query_string(server, capsys):
-    """passman_server.Handler.log_message promises this."""
+    """secretspace_server.Handler.log_message promises this."""
     server.request("GET", "/vault/alice/meta?leak=something-private")
     server.request("GET", "/health?also=private-too", token=None)
     log = capsys.readouterr().err

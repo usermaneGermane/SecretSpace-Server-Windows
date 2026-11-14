@@ -20,7 +20,7 @@ from test_server_v2 import (Account, alice, b64, keyset_blob,  # noqa: F401
                             login, put_vault, session_for, signup, vault_blob)
 from test_server_v2_vaults import (bob, create, create_body, made, me,  # noqa: F401
                                    new_id, sealed_name, vault_dir, wrapped_key)
-import passman_server                                           # noqa: E402
+import secretspace_server                                           # noqa: E402
 
 
 @pytest.fixture
@@ -343,8 +343,8 @@ def test_a_personal_vault_cannot_be_shared(server, alice, bob):
 
 
 @pytest.mark.parametrize("key", [None, "not base64 !!",
-                                 b64(os.urandom(passman_server.WRAPPED_KEY_LEN - 1)),
-                                 b64(os.urandom(passman_server.WRAPPED_KEY_LEN + 1))])
+                                 b64(os.urandom(secretspace_server.WRAPPED_KEY_LEN - 1)),
+                                 b64(os.urandom(secretspace_server.WRAPPED_KEY_LEN + 1))])
 def test_a_new_member_needs_a_whole_wrapped_key(server, alice, bob, key):
     session = session_for(server, alice)
     view, _ = made(server, session)
@@ -355,7 +355,7 @@ def test_a_new_member_needs_a_whole_wrapped_key(server, alice, bob, key):
 
 
 def test_the_member_limit_refuses_a_new_member(server, team, monkeypatch):
-    monkeypatch.setattr(passman_server, "MAX_MEMBERS_PER_VAULT", 3)
+    monkeypatch.setattr(secretspace_server, "MAX_MEMBERS_PER_VAULT", 3)
     dora = Account("dora")
     signup(server, dora)
     before = state(server, team.vid, "dora")
@@ -365,18 +365,18 @@ def test_the_member_limit_refuses_a_new_member(server, team, monkeypatch):
 
 
 def test_the_member_limit_does_not_stop_a_role_change(server, team, monkeypatch):
-    monkeypatch.setattr(passman_server, "MAX_MEMBERS_PER_VAULT", 3)
+    monkeypatch.setattr(secretspace_server, "MAX_MEMBERS_PER_VAULT", 3)
     assert put_member(server, team.sa, team.vid, "bob", "reader", wrapped=None)[0] == 200
 
 
 def test_the_member_limit_allows_one_more_below_it(server, team, monkeypatch):
-    monkeypatch.setattr(passman_server, "MAX_MEMBERS_PER_VAULT", 4)
+    monkeypatch.setattr(secretspace_server, "MAX_MEMBERS_PER_VAULT", 4)
     signup(server, Account("dora"))
     assert put_member(server, team.sa, team.vid, "dora", "reader")[0] == 200
 
 
 def test_an_account_in_too_many_vaults_cannot_be_added_to_another(server, alice, bob, monkeypatch):
-    monkeypatch.setattr(passman_server, "MAX_VAULTS_LISTED", 1)
+    monkeypatch.setattr(secretspace_server, "MAX_VAULTS_LISTED", 1)
     sa, sb = session_for(server, alice), session_for(server, bob)
     first, _ = made(server, sb)                  # bob lists one vault: the limit
     other, _ = made(server, sa)
@@ -438,7 +438,8 @@ def test_the_members_list_is_sorted_and_says_who_added_whom(server, team):
         ("alice", "owner", ""), ("bob", "editor", "alice"),
         ("Carol", "reader", "alice")]
     assert all(m["added_at"].endswith("Z") for m in body["members"][1:])
-    assert set(body["members"][0]) == {"username", "role", "added_by", "added_at"}
+    assert set(body["members"][0]) == {"username", "role", "added_by", "added_at",
+                                       "format"}
 
 
 def test_every_member_may_read_the_members_list_but_it_holds_no_keys(server, team):
@@ -755,7 +756,7 @@ def _add_key(name):
 
 
 def _short_key(body):
-    body["wrapped_keys"]["bob"] = b64(os.urandom(passman_server.WRAPPED_KEY_LEN - 1))
+    body["wrapped_keys"]["bob"] = b64(os.urandom(secretspace_server.WRAPPED_KEY_LEN - 1))
     return body
 
 
@@ -783,8 +784,8 @@ REFUSED = [
     ("blob missing from a vault that has one", 400, _without("blob", "revision")),
     ("name missing", 400, _without("name")),
     ("name not base64", 400, _mutate(name="not base64 !!")),
-    ("name too short", 400, _mutate(name=b64(b"x" * (passman_server.MIN_SEALED_NAME - 1)))),
-    ("name too long", 400, _mutate(name=b64(b"x" * (passman_server.MAX_SEALED_NAME + 1)))),
+    ("name too short", 400, _mutate(name=b64(b"x" * (secretspace_server.MIN_SEALED_NAME - 1)))),
+    ("name too long", 400, _mutate(name=b64(b"x" * (secretspace_server.MAX_SEALED_NAME + 1)))),
 ]
 
 
@@ -825,7 +826,7 @@ def test_a_revision_other_than_zero_is_stale_for_a_vault_never_uploaded(server, 
 # --- vault limits count only what an account made -------------------------------------------------
 
 def test_a_vault_shared_with_you_does_not_count_against_your_own_limit(server, alice, bob, monkeypatch):
-    monkeypatch.setattr(passman_server, "MAX_VAULTS_PER_ACCOUNT", 1)
+    monkeypatch.setattr(secretspace_server, "MAX_VAULTS_PER_ACCOUNT", 1)
     sa, sb = session_for(server, alice), session_for(server, bob)
     theirs, _ = made(server, sb)
     put_member(server, sb, theirs["id"], "alice", "editor")
@@ -834,7 +835,7 @@ def test_a_vault_shared_with_you_does_not_count_against_your_own_limit(server, a
 
 
 def test_the_limit_on_own_vaults_still_applies_to_a_member_of_many(server, alice, bob, monkeypatch):
-    monkeypatch.setattr(passman_server, "MAX_VAULTS_PER_ACCOUNT", 2)
+    monkeypatch.setattr(secretspace_server, "MAX_VAULTS_PER_ACCOUNT", 2)
     sa, sb = session_for(server, alice), session_for(server, bob)
     for _ in range(2):
         put_member(server, sb, made(server, sb)[0]["id"], "alice", "reader")
@@ -844,7 +845,7 @@ def test_the_limit_on_own_vaults_still_applies_to_a_member_of_many(server, alice
 
 
 def test_the_total_listed_limit_counts_shared_vaults_too(server, alice, bob, monkeypatch):
-    monkeypatch.setattr(passman_server, "MAX_VAULTS_LISTED", 2)
+    monkeypatch.setattr(secretspace_server, "MAX_VAULTS_LISTED", 2)
     sa, sb = session_for(server, alice), session_for(server, bob)
     put_member(server, sb, made(server, sb)[0]["id"], "alice", "reader")
     assert create(server, sa)[0] == 201
@@ -922,7 +923,7 @@ def test_the_log_of_a_deleted_vault_goes_with_its_folder(server, team):
 
 
 def test_the_log_is_cut_to_the_newest_lines(server, team, monkeypatch):
-    monkeypatch.setattr(passman_server, "AUDIT_LINES_SENT", 3)
+    monkeypatch.setattr(secretspace_server, "AUDIT_LINES_SENT", 3)
     put_vault(server, team.sa, team.vid, vault_blob(team.vid))
     for rev in "123":
         put_vault(server, team.sa, team.vid, vault_blob(team.vid), if_match=rev)
@@ -1043,8 +1044,8 @@ def test_the_logins_log_is_not_readable_through_the_api(server, alice):
 # --- rotation and failure of the log files ----------------------------------------------------------------
 
 def test_a_log_that_reaches_the_size_is_renamed_and_a_new_one_started(tmp_path, monkeypatch):
-    monkeypatch.setattr(passman_server, "AUDIT_ROTATE_BYTES", 300)
-    store = passman_server.AccountStore(str(tmp_path))
+    monkeypatch.setattr(secretspace_server, "AUDIT_ROTATE_BYTES", 300)
+    store = secretspace_server.AccountStore(str(tmp_path))
     path = os.path.join(store.root, "logins.log")
     written = 0
     while not os.path.exists(path + ".1") and written < 20:
@@ -1058,8 +1059,8 @@ def test_a_log_that_reaches_the_size_is_renamed_and_a_new_one_started(tmp_path, 
 
 
 def test_a_second_rotation_replaces_the_earlier_dot_one(tmp_path, monkeypatch):
-    monkeypatch.setattr(passman_server, "AUDIT_ROTATE_BYTES", 200)
-    store = passman_server.AccountStore(str(tmp_path))
+    monkeypatch.setattr(secretspace_server, "AUDIT_ROTATE_BYTES", 200)
+    store = secretspace_server.AccountStore(str(tmp_path))
     for number in range(40):
         store.audit(None, "login", f"user{number}", "127.0.0.1")
     path = os.path.join(store.root, "logins.log")
@@ -1069,7 +1070,7 @@ def test_a_second_rotation_replaces_the_earlier_dot_one(tmp_path, monkeypatch):
 
 
 def test_a_vault_log_rotates_in_its_own_folder(server, team, monkeypatch):
-    monkeypatch.setattr(passman_server, "AUDIT_ROTATE_BYTES", 400)
+    monkeypatch.setattr(secretspace_server, "AUDIT_ROTATE_BYTES", 400)
     put_vault(server, team.sa, team.vid, vault_blob(team.vid))
     for rev in range(1, 6):
         put_vault(server, team.sa, team.vid, vault_blob(team.vid), if_match=str(rev))
@@ -1081,24 +1082,24 @@ def test_a_vault_log_rotates_in_its_own_folder(server, team, monkeypatch):
 
 
 def test_a_log_below_the_size_is_not_rotated(tmp_path):
-    store = passman_server.AccountStore(str(tmp_path))
+    store = secretspace_server.AccountStore(str(tmp_path))
     for _ in range(5):
         store.audit(None, "login", "alice")
     assert os.listdir(store.root) == ["logins.log"]
 
 
 def test_audit_never_raises_when_the_folder_cannot_be_made(tmp_path, monkeypatch):
-    store = passman_server.AccountStore(str(tmp_path))
+    store = secretspace_server.AccountStore(str(tmp_path))
 
     def refuse(*args, **kwargs):
         raise OSError("disk full")
-    monkeypatch.setattr(passman_server.os, "makedirs", refuse)
+    monkeypatch.setattr(secretspace_server.os, "makedirs", refuse)
     store.audit(None, "login", "alice", "127.0.0.1")
     store.audit("ab" * 16, "upload", "alice", revision=1)
 
 
 def test_audit_never_raises_when_the_file_cannot_be_opened(tmp_path, monkeypatch):
-    store = passman_server.AccountStore(str(tmp_path))
+    store = secretspace_server.AccountStore(str(tmp_path))
     blocker = tmp_path / "blocker"
     blocker.write_text("a file where a folder should be")
     monkeypatch.setattr(store, "_audit_path",
@@ -1110,7 +1111,7 @@ def test_audit_never_raises_when_the_file_cannot_be_opened(tmp_path, monkeypatch
 def test_an_upload_still_succeeds_when_the_log_cannot_be_written(server, team, tmp_path, monkeypatch):
     blocker = tmp_path / "blocker"
     blocker.write_text("not a folder")
-    monkeypatch.setattr(passman_server.AccountStore, "_audit_path",
+    monkeypatch.setattr(secretspace_server.AccountStore, "_audit_path",
                         lambda self, vault_id=None: str(blocker / "x.log"))
     status, _, meta = put_vault(server, team.sa, team.vid, vault_blob(team.vid))
     assert status == 200 and meta["revision"] == 1

@@ -21,7 +21,7 @@ import pytest
 from test_server_http import TOKEN, server  # noqa: F401  (fixture)
 from test_server_v2 import (Account, alice, b64, keyset_blob,  # noqa: F401
                             login, session_for, signup)
-import passman_server                                           # noqa: E402
+import secretspace_server                                           # noqa: E402
 
 
 # --- helpers -----------------------------------------------------------------
@@ -72,10 +72,10 @@ def recovery_blob() -> str:
 
 
 def client_sized_recovery() -> bytes:
-    """A recovery copy with the body size of the real client's (a nonce, 133
+    """A recovery copy with the body size of the real client's (a nonce, 259
     bytes of keyset JSON and a tag), which the Account helper does not make."""
-    header = struct.pack(">4sBBIBB16s", b"PMK3", 1, 0, 0, 0, 0, bytes(16))
-    return header + os.urandom(12 + 133 + 16)
+    header = struct.pack(">4sBBIBB16s", b"SSK4", 2, 0, 0, 0, 0, bytes(16))
+    return header + os.urandom(12 + 259 + 16)
 
 
 def with_proof(server, account, proof=None):
@@ -135,7 +135,7 @@ def proved(server):
 
 @pytest.fixture
 def small_lockout(monkeypatch):
-    monkeypatch.setattr(passman_server, "MAX_LOGIN_FAILURES", 3)
+    monkeypatch.setattr(secretspace_server, "MAX_LOGIN_FAILURES", 3)
     return 3
 
 
@@ -143,7 +143,8 @@ def small_lockout(monkeypatch):
 
 def test_health_lists_vaults_sharing_and_recovery(server):
     _, _, body = server.request("GET", "/health", token=None)
-    assert body["features"] == ["vaults", "sharing", "recovery", "signed-keys"]
+    assert body["features"] == ["vaults", "sharing", "recovery", "signed-keys",
+                                "format-2"]
 
 
 # --- sign-up with a proof ----------------------------------------------------
@@ -317,7 +318,7 @@ def test_the_recovery_copy_of_an_unknown_name_is_made_up_but_the_same_shape(serv
     assert set(body) == {"username", "recovery"}
     assert body["username"] == "mallory"
     raw = unb64(body["recovery"])
-    assert raw[:4] == b"PMK3" and raw[5] == 0
+    assert raw[:4] == b"SSK4" and raw[4] == 2 and raw[5] == 0
 
 
 def test_the_made_up_copy_is_the_same_on_every_ask(server):
@@ -341,7 +342,7 @@ def test_the_made_up_copy_depends_on_a_key_only_the_server_has(server):
 
 
 def test_the_made_up_copy_has_the_length_of_a_clients_real_one(server):
-    """The real client's copy is a header, a nonce, 133 bytes of keyset JSON
+    """The real client's copy is a header, a nonce, 259 bytes of keyset JSON
     and a tag."""
     account = Account("real")
     account.recovery = b64(client_sized_recovery())
@@ -357,7 +358,7 @@ def test_the_made_up_copy_length_against_the_account_test_helper(server, alice):
     (189 in all)."""
     real = unb64(get_copy(server, "alice")[2]["recovery"])
     made = unb64(get_copy(server, "nobody")[2]["recovery"])
-    assert (len(real), len(made)) == (28 + 12 + 80, 28 + 12 + 133 + 16)
+    assert (len(real), len(made)) == (28 + 12 + 80, 28 + 12 + 259 + 16)
 
 
 def test_a_disabled_account_answers_like_an_unknown_name(server, alice):
@@ -369,8 +370,8 @@ def test_a_disabled_account_answers_like_an_unknown_name(server, alice):
     assert body["recovery"] != alice.recovery
     assert body["recovery"] == get_copy(server, "alice")[2]["recovery"]
     raw = unb64(body["recovery"])
-    assert raw[:4] == b"PMK3" and raw[5] == 0
-    assert len(raw) == 28 + 12 + 133 + 16
+    assert raw[:4] == b"SSK4" and raw[4] == 2 and raw[5] == 0
+    assert len(raw) == 28 + 12 + 259 + 16
 
 
 @pytest.mark.parametrize("name", ["..%2Fetc", "a%2Fb", "%20", "x" * 200])
@@ -609,8 +610,8 @@ def test_one_wrong_proof_fewer_than_the_limit_does_not_pause(server, proved, sma
 def test_the_recovery_pause_ends(server, proved, small_lockout, monkeypatch):
     for _ in range(small_lockout):
         recover(server, recover_body(proved, new_proof()))
-    later = passman_server.time.time() + passman_server.LOCKOUT_SECONDS + 1
-    monkeypatch.setattr(passman_server.time, "time", lambda: later)
+    later = secretspace_server.time.time() + secretspace_server.LOCKOUT_SECONDS + 1
+    monkeypatch.setattr(secretspace_server.time, "time", lambda: later)
     assert recover(server, recover_body(proved, proved.proof))[0] == 200
 
 

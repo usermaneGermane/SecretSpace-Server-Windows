@@ -46,9 +46,9 @@ MAX_BODY = 8 * 1024 * 1024
 #: the client's archive: getting it wrong should cost a restore, not a vault.
 HISTORY_LIMIT = 20
 
-#: A vault blob is base64 of "PMV2"||header||salt||nonce||ct, or a legacy
-#: salt||nonce||ct. Below this it cannot be either, so it is a misdirected
-#: request rather than a vault.
+#: A 2.x vault blob is base64 of marker||header||salt||nonce||ct, or the
+#: older salt||nonce||ct. Below this it cannot be either, so it is a
+#: misdirected request rather than a vault.
 MIN_BLOB_BYTES = 28
 
 #: Same rule the client applies, because these become directory names.
@@ -64,6 +64,33 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 
 _lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Names
+# ---------------------------------------------------------------------------
+#: What this server is called on the wire.
+SERVICE_NAME = "secretspace-sync"
+#: Settings come from the environment under this prefix (HOST, PORT, TOKEN).
+ENV_PREFIX = "SECRETSPACE_"
+#: The two optional headers of an upload.
+HEADER_KEY_GENERATION = "X-SecretSpace-Key-Generation"
+HEADER_DROP_HISTORY = "X-SecretSpace-Drop-History"
+
+# The project was called PassMan until November 2026. These are the names
+# from then. They are only ever READ -- from a settings file written by an
+# older setup, a request from an older app, an account not converted yet --
+# and never written. They go when the old apps do.
+LEGACY_ENV_PREFIX = "PASSMAN_"
+LEGACY_HEADER_KEY_GENERATION = "X-PassMan-Key-Generation"
+LEGACY_HEADER_DROP_HISTORY = "X-PassMan-Drop-History"
+LEGACY_KEYSET_MAGIC = b"PMK3"
+LEGACY_VAULT_MAGIC = b"PMV3"
+
+
+def env_setting(environ, name: str) -> str:
+    """A setting from the environment: the current name, else the old one."""
+    return (environ.get(ENV_PREFIX + name, "").strip()
+            or environ.get(LEGACY_ENV_PREFIX + name, "").strip())
 
 
 def utc_now() -> str:
@@ -287,12 +314,16 @@ RECOVERY_PROOF_LEN = 32
 
 #: The size of a recovery copy for an account's usual keyset, for the
 #: made-up answer about a name that has no account (see recovery_copy).
-_RECOVERY_BODY = 12 + 133 + 16
+_RECOVERY_BODY = 12 + 259 + 16
 
-#: The account files' layouts, from the client (account_crypto.py).
-_KEYSET_MAGIC = b"PMK3"
+#: The account files' layouts, from the client (account_crypto.py). Format 2
+#: is what SecretSpace 4 writes; format 1 is an account from SecretSpace 3
+#: that has not been converted yet.
+_KEYSET_MAGIC = b"SSK4"
+_KEYSET_VERSION = 2
 _KEYSET_HEADER = 4 + 1 + 1 + 4 + 1 + 1 + 16     # magic ver kdf mem passes lanes salt
-_VAULT_MAGIC = b"PMV3"
+_VAULT_MAGIC = b"SSV4"
+FORMAT_OLD, FORMAT_NOW = 1, 2
 
 
 class V2Error(Exception):
@@ -324,14 +355,21 @@ def keyset_kdf(sealed: str, recovery: bool = False) -> dict:
     ciphertext this server cannot and does not need to read.
     """
     raw = _unb64(sealed, "The recovery copy" if recovery else "The keyset")
-    if len(raw) < _KEYSET_HEADER + 12 + 16 or raw[:4] != _KEYSET_MAGIC:
-        raise V2Error(400, "That is not a SecretSpace 3 keyset.")
+    if len(raw) < _KEYSET_HEADER + 12 + 16 or \
+            raw[:4] not in (_KEYSET_MAGIC, LEGACY_KEYSET_MAGIC):
+        raise V2Error(400, "That is not a SecretSpace keyset.")
     kdf = raw[5]
     if kdf != (0 if recovery else 1):
         raise V2Error(400, "The keyset and its recovery copy are swapped.")
     memory_kib = int.from_bytes(raw[6:10], "big")
     return {"memory_kib": memory_kib, "passes": raw[10], "lanes": raw[11],
             "salt": _b64(raw[12:28])}
+
+
+def keyset_format(sealed: str) -> int:
+    """Which account format a sealed keyset is in (see keyset_kdf)."""
+    raw = _unb64(sealed, "The keyset")
+    return FORMAT_NOW if raw[:4] == _KEYSET_MAGIC else FORMAT_OLD
 
 
 def hash_login_key(login_key: bytes, salt: bytes = None) -> dict:
@@ -511,6 +549,7 @@ class AccountStore:
                 "keyset": body["keyset"],
                 "recovery": body["recovery"],
                 "kdf": kdf,
+                "format": keyset_format(body["keyset"]),
                 "personal_vault": vault_id,
                 "disabled": False,
             })
@@ -644,23 +683,44 @@ class AccountStore:
                 "can_recover": bool(record.get("recovery_check")),
                 "keyset": record["keyset"], "recovery": record["recovery"],
                 "kdf": record["kdf"], "personal_vault": vault_id,
+                "format": self.account_format(record),
                 "vaults": vaults}
 
-    def change_keyset(self, username: str, body: dict, keep_token: str) -> None:
+    @staticmethod
+    def account_format(record) -> int:
+        """1 for an account from SecretSpace 3 not converted yet, else 2."""
+        return int((record or {}).get("format", FORMAT_OLD) or FORMAT_OLD)
+
+    def change_keyset(self, username: str, body: dict, keep_token: str) -> bool:
         """
         A new master password: the same keys under a new seal, and the Login
         Key that goes with it. Every other session of the account ends -- a
         password is changed when it may have leaked.
+
+        It is also how an account from SecretSpace 3 is converted: the same
+        keys sealed in the new format. Returns True when this call converted
+        the account. A converted account never goes back: a device that
+        still sends the old format has an old app.
         """
         login_key = _unb64(body.get("login_key"), "The login key", LOGIN_KEY_LEN)
         kdf = keyset_kdf(body.get("keyset"))
+        new_format = keyset_format(body["keyset"])
         with _lock:
             record = self.account(username)
+            had = self.account_format(record)
+            if new_format < had:
+                raise V2Error(409, "This account was converted to the new "
+                                   "format on another device. Update "
+                                   "SecretSpace on this one.")
             record.update({"login": hash_login_key(login_key),
                            "keyset": body["keyset"], "kdf": kdf,
+                           "format": new_format,
                            "password_changed_at": utc_now()})
+            if new_format > had:
+                record["converted_at"] = utc_now()
             self._write_json(self._account_path(username), record)
         self._drop_expired_sessions(user_to_end=username, keep_token=keep_token)
+        return new_format > had
 
     def set_signing_key(self, username: str, body: dict) -> None:
         """
@@ -730,7 +790,8 @@ class AccountStore:
             filler += hmac.new(key, b"recovery|%d|" % block +
                                username.lower().encode(), hashlib.sha256).digest()
             block += 1
-        header = _KEYSET_MAGIC + bytes([1, 0]) + bytes(4 + 1 + 1 + 16)
+        header = _KEYSET_MAGIC + bytes([_KEYSET_VERSION, 0]) + \
+            bytes(4 + 1 + 1 + 16)
         return {"username": username,
                 "recovery": _b64(header + filler[:_RECOVERY_BODY])}
 
@@ -766,10 +827,17 @@ class AccountStore:
             raise V2Error(401, "The recovery phrase does not open this account.")
         with self._failure_lock:
             self._failures.pop(username.lower(), None)
+        new_format = keyset_format(body["keyset"])
+        if new_format < self.account_format(record):
+            raise V2Error(409, "This account was converted to the new format "
+                               "on another device. Update SecretSpace on "
+                               "this one.")
         with _lock:
             record = self.account(username)
             record.update({"login": hash_login_key(login_key),
                            "keyset": body["keyset"], "kdf": kdf,
+                           "format": max(new_format,
+                                         self.account_format(record)),
                            "recovery": body["recovery"],
                            "password_changed_at": utc_now(),
                            "recovered_at": utc_now()})
@@ -896,12 +964,57 @@ class AccountStore:
         """Who is in a vault -- every member may know."""
         members = self._read_json(self._members_path(vault_id)) or {}
         return {"key_generation": int(members.get("key_generation", 0)),
+                "format": self.vault_format(members),
                 "members": [
                     {"username": name, "role": m.get("role", "owner"),
                      "added_by": m.get("added_by", ""),
-                     "added_at": m.get("added_at", "")}
+                     "added_at": m.get("added_at", ""),
+                     "format": self.account_format(
+                         self._read_json(self._account_path(name)))}
                     for name, m in sorted(members.get("members", {}).items(),
                                           key=lambda kv: kv[0].lower())]}
+
+    # -- the format of a vault ------------------------------------------------
+    # A vault is converted (format 2) once it has been stored in the new
+    # form. That may only happen when every member's account is converted,
+    # so nobody is locked out of a vault by someone else's update; and from
+    # then on it takes neither an upload in the old form nor a member whose
+    # app could not read it.
+    @staticmethod
+    def vault_format(members: dict) -> int:
+        return int((members or {}).get("format", FORMAT_OLD) or FORMAT_OLD)
+
+    def _members_all_converted(self, members: dict) -> bool:
+        return all(self.account_format(self._read_json(self._account_path(n)))
+                   >= FORMAT_NOW for n in (members or {}).get("members", {}))
+
+    def check_blob(self, raw: bytes, vault_id: str, generation: int = None,
+                   staying=None) -> int:
+        """check_vault_blob, plus the rules above. Returns the blob's format.
+        ``staying``: the members after this call, when it removes some."""
+        blob_format = check_vault_blob(raw, vault_id, generation)
+        members = self._read_json(self._members_path(vault_id)) or {}
+        if blob_format < self.vault_format(members):
+            raise V2Error(409, "This vault was converted to the new format. "
+                               "Update SecretSpace on this device.")
+        if blob_format > self.vault_format(members):
+            people = members if staying is None else {
+                "members": {n: 1 for n in staying}}
+            if not self._members_all_converted(people):
+                raise V2Error(409, "Not every member of this vault has "
+                                   "updated SecretSpace yet; it stays in the "
+                                   "old format until they have.")
+        return blob_format
+
+    def note_vault_format(self, vault_id: str, blob_format: int) -> None:
+        """Remember that a vault is now stored in the new form."""
+        if blob_format < FORMAT_NOW:
+            return
+        with _lock:
+            members = self._read_json(self._members_path(vault_id)) or {}
+            if members and self.vault_format(members) < blob_format:
+                members["format"] = blob_format
+                self._write_json(self._members_path(vault_id), members)
 
     def put_member(self, actor: str, vault_id: str, name: str, body: dict) -> dict:
         """
@@ -932,6 +1045,10 @@ class AccountStore:
             wrapped = _b64(_unb64(body.get("wrapped_key"), "The vault key",
                                   WRAPPED_KEY_LEN))
             key_sig = _key_sig(body.get("key_sig"))
+            if self.vault_format(members) > self.account_format(target):
+                raise V2Error(409, f"“{who}” has to update SecretSpace and "
+                                   "unlock their account once before they "
+                                   "can join this vault.")
             if len(people) >= MAX_MEMBERS_PER_VAULT:
                 raise V2Error(403, f"A vault can have {MAX_MEMBERS_PER_VAULT} "
                                    "members.")
@@ -1023,9 +1140,12 @@ class AccountStore:
                     raw = base64.b64decode(str(blob).encode("ascii"), validate=True)
                 except Exception:
                     raise V2Error(400, "Blob is not valid base64.") from None
-                check_vault_blob(raw, vault_id, generation)
+                blob_format = self.check_blob(raw, vault_id, generation,
+                                              staying=staying)
                 self.vaults.write(vault_id, str(blob).encode("ascii"),
                                   generation, drop_history=True)
+                if blob_format > self.vault_format(members):
+                    members["format"] = blob_format
 
             for gone in removed:
                 del people[gone]
@@ -1071,24 +1191,27 @@ class AccountStore:
         return member.get("role") if member else None
 
 
-def check_vault_blob(raw: bytes, vault_id: str, generation: int = None) -> None:
-    """A v2 vault blob must be PMV3 and name the vault it is stored as, so a
-    confused client cannot put one vault's file in another's place. With
-    ``generation`` it must also say it is under the vault's current key: a
-    device that missed a key change must sync before it uploads, or it would
-    put back a copy that the removed members can read."""
-    if raw[:4] != _VAULT_MAGIC or len(raw) < 4 + 1 + 16 + 4 + 12 + 16:
-        raise V2Error(400, "That is not a SecretSpace 3 vault.")
+def check_vault_blob(raw: bytes, vault_id: str, generation: int = None) -> int:
+    """A v2 vault blob must be a SecretSpace vault and name the vault it is
+    stored as, so a confused client cannot put one vault's file in another's
+    place. With ``generation`` it must also say it is under the vault's
+    current key: a device that missed a key change must sync before it
+    uploads, or it would put back a copy that the removed members can read.
+    Returns the blob's format (1 = from SecretSpace 3, 2 = the current one)."""
+    if raw[:4] not in (_VAULT_MAGIC, LEGACY_VAULT_MAGIC) or \
+            len(raw) < 4 + 1 + 16 + 4 + 12 + 16:
+        raise V2Error(400, "That is not a SecretSpace vault.")
     if raw[5:21] != bytes.fromhex(vault_id):
         raise V2Error(400, "That vault file belongs to another vault.")
     if generation is not None and \
             int.from_bytes(raw[21:25], "big") != generation:
         raise V2Error(409, "This vault's key was changed on another device. "
                            "Sync again to get the new key.")
+    return FORMAT_NOW if raw[:4] == _VAULT_MAGIC else FORMAT_OLD
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "PassManSync/1.0"
+    server_version = "SecretSpaceSync/2"
 
     # -- plumbing ---------------------------------------------------------
     def _send(self, status: int, payload: dict) -> None:
@@ -1150,11 +1273,13 @@ class Handler(BaseHTTPRequestHandler):
             # "sharing" = members, roles, key change and the audit log
             # (2.0.0-alpha.3). "recovery" = an account recovered with its
             # 12-word phrase (2.0.0-alpha.4). "signed-keys" = a signature is
-            # kept with every wrapped vault key (2.0.0-alpha.5).
-            return self._send(200, {"ok": True, "service": "passman-sync",
+            # kept with every wrapped vault key (2.0.0-alpha.5). "format-2" =
+            # accounts and vaults in the format SecretSpace 4 writes (2.1.0).
+            return self._send(200, {"ok": True, "service": SERVICE_NAME,
                                     "api": [1, 2],
                                     "features": ["vaults", "sharing",
-                                                 "recovery", "signed-keys"]})
+                                                 "recovery", "signed-keys",
+                                                 "format-2"]})
         if self._is_v2():
             return self._v2("GET")
 
@@ -1260,16 +1385,19 @@ class Handler(BaseHTTPRequestHandler):
 
         # Optional, and absent from clients older than password-change
         # support; the store then keeps what it had.
-        generation = self.headers.get("X-PassMan-Key-Generation")
+        generation = self.headers.get(HEADER_KEY_GENERATION)
+        if generation is None:
+            generation = self.headers.get(LEGACY_HEADER_KEY_GENERATION)
         if generation is not None:
             try:
                 generation = int(generation)
             except ValueError:
                 generation = -1
             if generation < 0:
-                return self._error(400, "X-PassMan-Key-Generation must be a "
+                return self._error(400, "The key generation header must be a "
                                         "whole number, 0 or more.")
-        drop_history = self.headers.get("X-PassMan-Drop-History") == "1"
+        drop_history = "1" in (self.headers.get(HEADER_DROP_HISTORY),
+                               self.headers.get(LEGACY_HEADER_DROP_HISTORY))
 
         # One writer at a time: check-then-write has to be atomic, or two
         # simultaneous pushes could both pass the revision check.
@@ -1396,8 +1524,9 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_body()
             if body is None:
                 return None
-            accounts.change_keyset(username, body, keep_token=token)
-            accounts.audit(None, "password_changed", username, address)
+            converted = accounts.change_keyset(username, body, keep_token=token)
+            accounts.audit(None, "account_converted" if converted
+                           else "password_changed", username, address)
             return self._send(200, {})
         if route == ("PUT", "me", 2) and parts[1] == "signing-key":
             body = self._read_body()
@@ -1455,12 +1584,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(403, "You can read this vault but not "
                                             "change it.")
                 generation = accounts.key_generation(vault_id)
-                return self._store_blob(
-                    accounts.vaults, vault_id,
-                    check=lambda raw: check_vault_blob(raw, vault_id, generation),
-                    stored=lambda meta: accounts.audit(
-                        vault_id, "upload", username, address,
-                        revision=meta["revision"]))
+                seen = {}
+
+                def check(raw):
+                    seen["format"] = accounts.check_blob(raw, vault_id,
+                                                         generation)
+
+                def stored(meta):
+                    accounts.note_vault_format(vault_id, seen.get("format", 0))
+                    accounts.audit(vault_id, "upload", username, address,
+                                   revision=meta["revision"])
+                return self._store_blob(accounts.vaults, vault_id,
+                                        check=check, stored=stored)
         return self._error(404, "No such endpoint.")
 
     def _v2_vault_owner_call(self, method, tail, count, member, username):
@@ -1545,7 +1680,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def load_token(args) -> str:
     """
-    The shared secret, from --token-file, $PASSMAN_TOKEN, or server/token.
+    The shared secret, from --token-file, $SECRETSPACE_TOKEN, or server/token.
 
     Deliberately not a command-line --token: arguments are visible in `ps` to
     every user on the box.
@@ -1561,7 +1696,7 @@ def load_token(args) -> str:
                      f"{e.strerror}. Check that it exists and that the user "
                      f"running the server can read it.")
 
-    env = os.environ.get("PASSMAN_TOKEN", "").strip()
+    env = env_setting(os.environ, "TOKEN")
     if env:
         return env
 
@@ -1591,21 +1726,21 @@ def parse_port(value: str, source: str) -> int:
 
 def resolve_listen(args, environ=None):
     """
-    Where to listen: a flag wins, then $PASSMAN_HOST / $PASSMAN_PORT, then
-    127.0.0.1:8787.
+    Where to listen: a flag wins, then $SECRETSPACE_HOST / $SECRETSPACE_PORT,
+    then 127.0.0.1:8787.
 
     The environment is how the systemd unit gets them: it loads
-    /etc/passman/sync.env, which passman_setup.py writes, so changing the
-    port never means editing the unit.
+    /etc/secretspace/sync.env, which secretspace_setup.py writes, so changing
+    the port never means editing the unit.
     """
     environ = os.environ if environ is None else environ
     host = args.host
     if host is None:
-        host = environ.get("PASSMAN_HOST", "").strip() or DEFAULT_HOST
+        host = env_setting(environ, "HOST") or DEFAULT_HOST
     port = args.port
     if port is None:
-        env = environ.get("PASSMAN_PORT", "").strip()
-        port = parse_port(env, "PASSMAN_PORT") if env else DEFAULT_PORT
+        env = env_setting(environ, "PORT")
+        port = parse_port(env, ENV_PREFIX + "PORT") if env else DEFAULT_PORT
     else:
         port = parse_port(str(port), "--port")
     return host, port
@@ -1674,13 +1809,13 @@ def main(argv=None):
     here =os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser(description=__doc__.strip().split("\n")[0])
     parser.add_argument("--host",
-                        help="address to listen on (default: $PASSMAN_HOST, "
+                        help="address to listen on (default: $SECRETSPACE_HOST, "
                              "else 127.0.0.1, this machine only). Use 0.0.0.0 "
                              "for every network, or one of this machine's own "
                              "addresses (see `ip -4 addr show`) for just that "
                              "network.")
     parser.add_argument("--port", type=int,
-                        help=f"port to listen on (default: $PASSMAN_PORT, "
+                        help=f"port to listen on (default: $SECRETSPACE_PORT, "
                              f"else {DEFAULT_PORT})")
     parser.add_argument("--store", default=os.path.join(here, "store"),
                         help="directory for the encrypted blobs")

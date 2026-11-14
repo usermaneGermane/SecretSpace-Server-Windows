@@ -1,7 +1,7 @@
 """
-The Windows version resource for PassMan-Server.exe and
-PassMan-Server-Setup.exe -- what Explorer shows under Properties > Details.
-Used by PassMan-Server.spec at build time only; the server never imports it,
+The Windows version resource for SecretSpace-Server.exe and
+SecretSpace-Server-Setup.exe -- what Explorer shows under Properties > Details.
+Used by SecretSpace-Server.spec at build time only; the server never imports it,
 so PyInstaller does not bundle it.
 
 It reads version.py, so the exes and the installer (the builder passes the
@@ -16,7 +16,7 @@ from version import __version__, file_version
 
 
 def version_info(description="SecretSpace sync server",
-                 filename="PassMan-Server.exe") -> VSVersionInfo:
+                 filename="SecretSpace-Server.exe") -> VSVersionInfo:
     numbers = file_version()
     return VSVersionInfo(
         ffi=FixedFileInfo(filevers=numbers, prodvers=numbers),

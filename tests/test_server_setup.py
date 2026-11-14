@@ -1,8 +1,8 @@
 """
 The sync server's listen settings and its setup script.
 
-Where it listens: a flag wins, then PASSMAN_HOST / PASSMAN_PORT (which the
-systemd unit loads from /etc/passman/sync.env), then 127.0.0.1:8787. The
+Where it listens: a flag wins, then SECRETSPACE_HOST / SECRETSPACE_PORT (which the
+systemd unit loads from /etc/secretspace/sync.env), then 127.0.0.1:8787. The
 setup script writes that file and the token; nothing here touches the real
 /etc -- every test points --config-dir at a temporary folder and fakes
 `ip` and `systemctl`.
@@ -19,14 +19,14 @@ import pytest
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server"))
 
-import passman_server                                           # noqa: E402
-import passman_setup                                            # noqa: E402
-import passman_server_exe                                       # noqa: E402
-import passman_server_setup_exe                                 # noqa: E402
+import secretspace_server                                           # noqa: E402
+import secretspace_setup                                            # noqa: E402
+import secretspace_server_exe                                       # noqa: E402
+import secretspace_server_setup_exe                                 # noqa: E402
 
 
 def listen(environ, host=None, port=None):
-    return passman_server.resolve_listen(
+    return secretspace_server.resolve_listen(
         argparse.Namespace(host=host, port=port), environ)
 
 
@@ -37,30 +37,30 @@ def test_with_nothing_set_it_listens_on_this_machine_only():
 
 
 def test_the_environment_sets_host_and_port():
-    env = {"PASSMAN_HOST": "0.0.0.0", "PASSMAN_PORT": "9000"}
+    env = {"SECRETSPACE_HOST": "0.0.0.0", "SECRETSPACE_PORT": "9000"}
     assert listen(env) == ("0.0.0.0", 9000)
 
 
 def test_a_flag_beats_the_environment():
-    env = {"PASSMAN_HOST": "0.0.0.0", "PASSMAN_PORT": "9000"}
+    env = {"SECRETSPACE_HOST": "0.0.0.0", "SECRETSPACE_PORT": "9000"}
     assert listen(env, host="10.0.0.5", port=9100) == ("10.0.0.5", 9100)
 
 
 def test_each_setting_falls_back_on_its_own():
-    assert listen({"PASSMAN_PORT": "9000"}) == ("127.0.0.1", 9000)
-    assert listen({"PASSMAN_HOST": "0.0.0.0"}, port=9100) == ("0.0.0.0", 9100)
+    assert listen({"SECRETSPACE_PORT": "9000"}) == ("127.0.0.1", 9000)
+    assert listen({"SECRETSPACE_HOST": "0.0.0.0"}, port=9100) == ("0.0.0.0", 9100)
 
 
 def test_an_empty_variable_counts_as_unset():
-    assert listen({"PASSMAN_HOST": " ", "PASSMAN_PORT": ""}) == \
+    assert listen({"SECRETSPACE_HOST": " ", "SECRETSPACE_PORT": ""}) == \
         ("127.0.0.1", 8787)
 
 
 @pytest.mark.parametrize("bad", ["eighty", "0", "65536", "-1", "80.5"])
 def test_a_bad_port_in_the_environment_stops_with_its_name(bad):
     with pytest.raises(SystemExit) as stop:
-        listen({"PASSMAN_PORT": bad})
-    assert "PASSMAN_PORT" in str(stop.value)
+        listen({"SECRETSPACE_PORT": bad})
+    assert "SECRETSPACE_PORT" in str(stop.value)
 
 
 def test_a_bad_port_flag_stops_too():
@@ -129,7 +129,7 @@ class FakeSystem:
 
     @property
     def restarted(self):
-        return ["systemctl", "restart", "passman-sync"] in self.calls
+        return ["systemctl", "restart", "secretspace-sync"] in self.calls
 
     def ran(self, needle):
         """Every command (as one string) that contains needle."""
@@ -138,19 +138,19 @@ class FakeSystem:
 
 @pytest.fixture(autouse=True)
 def systemctl_present(monkeypatch):
-    monkeypatch.setattr(passman_setup.shutil, "which", lambda name: "/bin/x")
+    monkeypatch.setattr(secretspace_setup.shutil, "which", lambda name: "/bin/x")
 
 
 @pytest.fixture(autouse=True)
 def port_free(monkeypatch):
-    monkeypatch.setattr(passman_setup, "port_in_use", lambda h, p: False)
+    monkeypatch.setattr(secretspace_setup, "port_in_use", lambda h, p: False)
 
 
 def run_setup(tmp_path, answers=(), argv=(), system=None, platform="linux"):
     answers = list(answers)
     said = []
     system = system or FakeSystem()
-    passman_setup.main(["--config-dir", str(tmp_path), "--platform", platform,
+    secretspace_setup.main(["--config-dir", str(tmp_path), "--platform", platform,
                         *argv],
                        ask=lambda prompt: answers.pop(0),
                        say=said.append, run=system)
@@ -159,26 +159,26 @@ def run_setup(tmp_path, answers=(), argv=(), system=None, platform="linux"):
 
 
 def test_it_lists_this_machines_networks_without_loopback():
-    assert passman_setup.list_addresses(FakeSystem()) == [
+    assert secretspace_setup.list_addresses(FakeSystem()) == [
         ("eth0", "192.168.1.50", 24), ("wg0", "10.8.0.1", 24)]
 
 
 def test_without_ip_there_is_simply_nothing_to_list():
-    assert passman_setup.list_addresses(FakeSystem(ip_output=None)) == []
+    assert secretspace_setup.list_addresses(FakeSystem(ip_output=None)) == []
 
 
 def test_setup_writes_the_chosen_address_and_port(tmp_path):
     out, _ = run_setup(tmp_path, answers=["2", "9443", ""])
-    env = passman_setup.read_env(tmp_path / "sync.env")
-    assert env == {"PASSMAN_HOST": "192.168.1.50", "PASSMAN_PORT": "9443"}
+    env = secretspace_setup.read_env(tmp_path / "sync.env")
+    assert env == {"SECRETSPACE_HOST": "192.168.1.50", "SECRETSPACE_PORT": "9443"}
     assert "http://192.168.1.50:9443" in out
     assert "ufw allow from 192.168.1.0/24 to any port 9443" in out
 
 
 def test_the_defaults_are_every_network_and_8787(tmp_path):
     out, _ = run_setup(tmp_path, answers=["", "", ""])
-    env = passman_setup.read_env(tmp_path / "sync.env")
-    assert env == {"PASSMAN_HOST": "0.0.0.0", "PASSMAN_PORT": "8787"}
+    env = secretspace_setup.read_env(tmp_path / "sync.env")
+    assert env == {"SECRETSPACE_HOST": "0.0.0.0", "SECRETSPACE_PORT": "8787"}
     # Every network: one address and one firewall rule per network.
     assert "http://192.168.1.50:8787" in out and "http://10.8.0.1:8787" in out
     assert "from 10.8.0.0/24 to any port 8787" in out
@@ -186,28 +186,28 @@ def test_the_defaults_are_every_network_and_8787(tmp_path):
 
 def test_what_setup_writes_is_what_the_server_reads(tmp_path):
     run_setup(tmp_path, argv=["setup", "--host", "10.8.0.1", "--port", "9000"])
-    env = passman_setup.read_env(tmp_path / "sync.env")
+    env = secretspace_setup.read_env(tmp_path / "sync.env")
     assert listen(env) == ("10.8.0.1", 9000)
 
 
 def test_running_setup_again_offers_the_current_values(tmp_path):
     run_setup(tmp_path, argv=["setup", "--host", "10.8.0.1", "--port", "9000"])
     run_setup(tmp_path, answers=["", "", ""])
-    assert passman_setup.read_env(tmp_path / "sync.env") == \
-        {"PASSMAN_HOST": "10.8.0.1", "PASSMAN_PORT": "9000"}
+    assert secretspace_setup.read_env(tmp_path / "sync.env") == \
+        {"SECRETSPACE_HOST": "10.8.0.1", "SECRETSPACE_PORT": "9000"}
 
 
 @pytest.mark.parametrize("bad", ["80", "70000", "web"])
 def test_a_bad_port_is_asked_again(tmp_path, bad):
     out, _ = run_setup(tmp_path, answers=["1", bad, "9000", ""])
-    assert passman_setup.read_env(tmp_path / "sync.env")["PASSMAN_PORT"] == \
+    assert secretspace_setup.read_env(tmp_path / "sync.env")["SECRETSPACE_PORT"] == \
         "9000"
 
 
 def test_an_address_this_machine_does_not_have_is_refused(tmp_path):
     out, _ = run_setup(tmp_path, answers=["192.168.7.7", "3", "", ""])
     assert "does not have 192.168.7.7" in out
-    assert passman_setup.read_env(tmp_path / "sync.env")["PASSMAN_HOST"] == \
+    assert secretspace_setup.read_env(tmp_path / "sync.env")["SECRETSPACE_HOST"] == \
         "10.8.0.1"
 
 
@@ -276,7 +276,7 @@ def test_new_token_yes_skips_the_question(tmp_path):
 def test_the_server_accepts_the_token_setup_wrote(tmp_path):
     run_setup(tmp_path, argv=["new-token", "--yes"])
     args = argparse.Namespace(token_file=str(tmp_path / "token"))
-    token = passman_server.load_token(args)
+    token = secretspace_server.load_token(args)
     assert token == (tmp_path / "token").read_text().strip()
     assert len(token) >= 16
 
@@ -296,20 +296,20 @@ def test_show_token_without_one_says_to_run_setup(tmp_path):
 def test_keep_reuses_the_saved_values_without_asking(tmp_path):
     run_setup(tmp_path, argv=["setup", "--host", "10.8.0.1", "--port", "9000"])
     run_setup(tmp_path, argv=["setup", "--keep"])          # no answers given
-    assert passman_setup.read_env(tmp_path / "sync.env") == \
-        {"PASSMAN_HOST": "10.8.0.1", "PASSMAN_PORT": "9000"}
+    assert secretspace_setup.read_env(tmp_path / "sync.env") == \
+        {"SECRETSPACE_HOST": "10.8.0.1", "SECRETSPACE_PORT": "9000"}
 
 
 def test_keep_with_nothing_saved_asks(tmp_path):
     run_setup(tmp_path, answers=["", "", ""], argv=["setup", "--keep"])
-    assert passman_setup.read_env(tmp_path / "sync.env")["PASSMAN_PORT"] == \
+    assert secretspace_setup.read_env(tmp_path / "sync.env")["SECRETSPACE_PORT"] == \
         "8787"
 
 
 def test_pause_shows_an_error_before_waiting(tmp_path):
     said, asked = [], []
     with pytest.raises(SystemExit):
-        passman_setup.main(
+        secretspace_setup.main(
             ["--config-dir", str(tmp_path), "--platform", "linux", "--pause",
              "show-token"],
             ask=lambda prompt: asked.append((prompt, list(said))) or "",
@@ -360,8 +360,8 @@ def test_no_change_touches_no_firewall_rule(tmp_path):
 # --- extra addresses (--allow-from) -----------------------------------------
 
 def allowed(tmp_path):
-    return passman_setup.read_env(tmp_path / "sync.env").get(
-        passman_setup.ALLOW_KEY)
+    return secretspace_setup.read_env(tmp_path / "sync.env").get(
+        secretspace_setup.ALLOW_KEY)
 
 
 @pytest.mark.parametrize("text, expected", [
@@ -373,13 +373,13 @@ def allowed(tmp_path):
     ("-", []), ("none", []), ("", []),
 ])
 def test_allow_from_accepts_addresses_and_networks(text, expected):
-    assert passman_setup.check_allow(text) == (expected, None)
+    assert secretspace_setup.check_allow(text) == (expected, None)
 
 
 @pytest.mark.parametrize("bad", ["0.0.0.0/0", "everyone", "fe80::1",
                                  "10.0.0.300", "1.2.3.4/33"])
 def test_allow_from_refuses_everyone_and_nonsense(bad):
-    allow, problem = passman_setup.check_allow(bad)
+    allow, problem = secretspace_setup.check_allow(bad)
     assert allow is None and problem
 
 
@@ -388,7 +388,7 @@ def test_the_question_saves_extra_addresses(tmp_path):
     assert allowed(tmp_path) == "192.168.0.1"
     assert "Also let in: 192.168.0.1" in out
     # Host and port are still what the server reads.
-    env = passman_setup.read_env(tmp_path / "sync.env")
+    env = secretspace_setup.read_env(tmp_path / "sync.env")
     assert listen(env) == ("0.0.0.0", 8787)
 
 
@@ -499,14 +499,14 @@ def win_setup(tmp_path, answers=(), argv=(), system=None):
 
 
 def test_windows_lists_its_networks_without_loopback_or_link_local():
-    assert passman_setup.list_addresses(FakeSystem(), "windows") == \
+    assert secretspace_setup.list_addresses(FakeSystem(), "windows") == \
         [("Ethernet", "192.168.1.60", 24)]
 
 
 def test_windows_one_network_comes_back_as_an_object_not_a_list():
     one = json.dumps({"InterfaceAlias": "Ethernet", "IPAddress": "10.0.0.9",
                       "PrefixLength": 16})
-    assert passman_setup.list_addresses(FakeSystem(win_output=one),
+    assert secretspace_setup.list_addresses(FakeSystem(win_output=one),
                                         "windows") == \
         [("Ethernet", "10.0.0.9", 16)]
 
@@ -590,13 +590,13 @@ def test_remove_on_linux_points_at_systemctl(tmp_path):
 
 
 def test_a_quote_in_a_path_cannot_break_out_of_powershell():
-    assert passman_setup.ps_quote("C:\\it's here") == "'C:\\it''s here'"
+    assert secretspace_setup.ps_quote("C:\\it's here") == "'C:\\it''s here'"
 
 
 # --- the server's Windows options -------------------------------------------
 
 def test_the_log_file_stamps_every_line(tmp_path):
-    log = passman_server.open_log(str(tmp_path / "logs" / "server.log"))
+    log = secretspace_server.open_log(str(tmp_path / "logs" / "server.log"))
     log.write("one\ntwo ")
     log.write("still two\n")
     lines = (tmp_path / "logs" / "server.log").read_text().splitlines()
@@ -605,10 +605,10 @@ def test_the_log_file_stamps_every_line(tmp_path):
 
 
 def test_a_large_log_is_rotated_at_start(tmp_path, monkeypatch):
-    monkeypatch.setattr(passman_server, "LOG_ROTATE_BYTES", 10)
+    monkeypatch.setattr(secretspace_server, "LOG_ROTATE_BYTES", 10)
     path = tmp_path / "server.log"
     path.write_text("x" * 20)
-    passman_server.open_log(str(path)).write("new\n")
+    secretspace_server.open_log(str(path)).write("new\n")
     assert (tmp_path / "server.log.1").read_text() == "x" * 20
     assert path.read_text().endswith("new\n")
 
@@ -621,9 +621,9 @@ def test_bind_retries_an_address_that_is_not_there_yet(monkeypatch):
         if len(attempts) < 3:
             raise OSError(10049, "not there")
         return "server"
-    monkeypatch.setattr(passman_server, "ThreadingHTTPServer", flaky)
+    monkeypatch.setattr(secretspace_server, "ThreadingHTTPServer", flaky)
     slept = []
-    assert passman_server.bind("10.9.9.9", 9000, 10, sleep=slept.append) == \
+    assert secretspace_server.bind("10.9.9.9", 9000, 10, sleep=slept.append) == \
         "server"
     assert slept == [10, 10]
 
@@ -631,36 +631,36 @@ def test_bind_retries_an_address_that_is_not_there_yet(monkeypatch):
 def test_bind_without_retry_fails_at_once(monkeypatch):
     def broken(address, handler):
         raise OSError(10049, "not there")
-    monkeypatch.setattr(passman_server, "ThreadingHTTPServer", broken)
+    monkeypatch.setattr(secretspace_server, "ThreadingHTTPServer", broken)
     with pytest.raises(OSError):
-        passman_server.bind("10.9.9.9", 9000)
+        secretspace_server.bind("10.9.9.9", 9000)
 
 
-# --- PassMan-Server.exe and PassMan-Server-Setup.exe -------------------------
+# --- SecretSpace-Server.exe and SecretSpace-Server-Setup.exe -------------------------
 
 def test_the_task_runs_the_server_not_the_setup_program():
-    """Run from PassMan-Server-Setup.exe, the task must still start
-    PassMan-Server.exe beside it -- never the setup program itself."""
+    """Run from SecretSpace-Server-Setup.exe, the task must still start
+    SecretSpace-Server.exe beside it -- never the setup program itself."""
     setup = os.path.join("C:\\Program Files", "SecretSpace Server",
-                         "PassMan-Server-Setup.exe")
-    program, prefix = passman_setup.server_command(frozen=True,
+                         "SecretSpace-Server-Setup.exe")
+    program, prefix = secretspace_setup.server_command(frozen=True,
                                                    executable=setup)
     assert program == os.path.join("C:\\Program Files", "SecretSpace Server",
-                                   "PassMan-Server.exe")
+                                   "SecretSpace-Server.exe")
     assert prefix == []
 
 
-def test_from_source_the_task_runs_passman_server_py():
-    program, prefix = passman_setup.server_command(frozen=False,
+def test_from_source_the_task_runs_secretspace_server_py():
+    program, prefix = secretspace_setup.server_command(frozen=False,
                                                    executable="python.exe")
     assert program == "python.exe"
-    assert prefix[0].endswith("passman_server.py")
+    assert prefix[0].endswith("secretspace_server.py")
 
 
 def test_the_setup_program_double_clicked_opens_the_menu(monkeypatch):
     seen = []
-    monkeypatch.setattr(passman_setup, "main", seen.append)
-    passman_server_setup_exe.main([])
+    monkeypatch.setattr(secretspace_setup, "main", seen.append)
+    secretspace_server_setup_exe.main([])
     assert seen == [["menu"]]
 
 
@@ -688,7 +688,7 @@ def test_the_menu_changes_the_port_then_comes_back(tmp_path):
     run_setup(tmp_path, argv=["setup", "--host", "10.8.0.1", "--port", "9000"])
     out, _ = run_setup(tmp_path, answers=["1", "", "9443", "", "3", "4"],
                        argv=["menu"])
-    assert passman_setup.read_env(tmp_path / "sync.env")["PASSMAN_PORT"] == \
+    assert secretspace_setup.read_env(tmp_path / "sync.env")["SECRETSPACE_PORT"] == \
         "9443"
     # Back at the menu with the new port, and then the token was shown.
     assert "Listening on 10.8.0.1:9443" in out
@@ -711,14 +711,14 @@ def test_the_menu_closes_on_end_of_input(tmp_path):
 
     def ask(prompt):
         raise EOFError
-    passman_setup.main(["--config-dir", str(tmp_path), "--platform", "linux",
+    secretspace_setup.main(["--config-dir", str(tmp_path), "--platform", "linux",
                         "menu"], ask=ask, say=said.append, run=FakeSystem())
 
 
 def test_the_menu_does_not_add_a_second_press_enter(tmp_path):
     """An elevated relaunch always adds --pause; the menu has Close."""
     asked = []
-    passman_setup.main(["--config-dir", str(tmp_path), "--platform", "linux",
+    secretspace_setup.main(["--config-dir", str(tmp_path), "--platform", "linux",
                         "--pause", "menu"],
                        ask=lambda prompt: asked.append(prompt) or "4",
                        say=lambda line: None, run=FakeSystem())
@@ -727,29 +727,29 @@ def test_the_menu_does_not_add_a_second_press_enter(tmp_path):
 
 def test_the_setup_program_passes_commands_on(monkeypatch):
     seen = []
-    monkeypatch.setattr(passman_setup, "main", seen.append)
-    monkeypatch.setattr(passman_server, "main",
+    monkeypatch.setattr(secretspace_setup, "main", seen.append)
+    monkeypatch.setattr(secretspace_server, "main",
                         lambda a: pytest.fail("the server must not start"))
-    passman_server_setup_exe.main(["--pause", "new-token"])
+    secretspace_server_setup_exe.main(["--pause", "new-token"])
     assert seen == [["--pause", "new-token"]]
 
 
 def test_the_server_exe_still_hands_old_commands_over(monkeypatch):
     """Installs from before the split uninstall with
-    `PassMan-Server.exe remove`; that must keep working."""
+    `SecretSpace-Server.exe remove`; that must keep working."""
     seen = []
-    monkeypatch.setattr(passman_setup, "main", seen.append)
-    passman_server_exe.main(["remove"])
+    monkeypatch.setattr(secretspace_setup, "main", seen.append)
+    secretspace_server_exe.main(["remove"])
     assert seen == [["remove"]]
 
 
 def test_the_exe_sends_commands_to_setup_and_the_rest_to_the_server(
         monkeypatch):
     seen = []
-    monkeypatch.setattr(passman_setup, "main", lambda a: seen.append(("setup", a)))
-    monkeypatch.setattr(passman_server, "main",
+    monkeypatch.setattr(secretspace_setup, "main", lambda a: seen.append(("setup", a)))
+    monkeypatch.setattr(secretspace_server, "main",
                         lambda a: seen.append(("server", a)))
-    passman_server_exe.main(["--pause", "new-token"])
-    passman_server_exe.main(["--host", "0.0.0.0", "--port", "8787"])
+    secretspace_server_exe.main(["--pause", "new-token"])
+    secretspace_server_exe.main(["--host", "0.0.0.0", "--port", "8787"])
     assert seen == [("setup", ["--pause", "new-token"]),
                     ("server", ["--host", "0.0.0.0", "--port", "8787"])]

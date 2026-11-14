@@ -1,14 +1,14 @@
 """
-PassMan-Server-Setup.exe -- changes the Windows server's settings.
+SecretSpace-Server-Setup.exe -- changes the Windows server's settings.
 
-    PassMan-Server-Setup.exe               a menu of the below (double-click it)
-    PassMan-Server-Setup.exe setup         network and port
-    PassMan-Server-Setup.exe new-token     replace the token
-    PassMan-Server-Setup.exe show-token    print the token
-    PassMan-Server-Setup.exe remove        remove the task and firewall rule
+    SecretSpace-Server-Setup.exe               a menu of the below (double-click it)
+    SecretSpace-Server-Setup.exe setup         network and port
+    SecretSpace-Server-Setup.exe new-token     replace the token
+    SecretSpace-Server-Setup.exe show-token    print the token
+    SecretSpace-Server-Setup.exe remove        remove the task and firewall rule
 
 It installs nothing and unpacks nothing: it rewrites
-%ProgramData%\\PassMan Server\\sync.env, replaces the firewall rule and the
+%ProgramData%\\SecretSpace Server\\sync.env, replaces the firewall rule and the
 startup task, and restarts the server. Installing and upgrading the program
 is SecretSpace-Server-Installer.exe's job, which runs this once at the end.
 
@@ -21,7 +21,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import passman_setup                                            # noqa: E402
+import secretspace_setup                                            # noqa: E402
 
 
 def main(argv=None):
@@ -32,11 +32,11 @@ def main(argv=None):
         argv = ["menu"]
     wants_help = "-h" in argv or "--help" in argv
     if getattr(sys, "frozen", False) and not wants_help \
-            and not passman_setup.is_admin("windows"):
-        if not passman_setup.relaunch_as_admin(argv):
+            and not secretspace_setup.is_admin("windows"):
+        if not secretspace_setup.relaunch_as_admin(argv):
             sys.exit("This needs administrator rights.")
         return
-    passman_setup.main(argv)
+    secretspace_setup.main(argv)
 
 
 if __name__ == "__main__":
