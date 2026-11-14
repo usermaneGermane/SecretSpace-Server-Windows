@@ -103,14 +103,14 @@ def test_missing_inno_setup_offers_winget():
 
 
 def test_both_programs_must_import():
-    runner = healthy(**{"import passman_server_exe": build.Result(
-        1, "Traceback...\nModuleNotFoundError: No module named 'passman_setup'")})
+    runner = healthy(**{"import secretspace_server_exe": build.Result(
+        1, "Traceback...\nModuleNotFoundError: No module named 'secretspace_setup'")})
     checks = build.check_all(PROJECT, runner, find_iscc=has_iscc)
     imp = checks_by_name(checks)["The server imports cleanly"]
-    assert not imp.ok and "No module named 'passman_setup'" in imp.detail
+    assert not imp.ok and "No module named 'secretspace_setup'" in imp.detail
     cmd = " ".join(next(c for c, _ in runner.calls
-                        if "passman_server_exe" in " ".join(c)))
-    assert "passman_server_setup_exe" in cmd
+                        if "secretspace_server_exe" in " ".join(c)))
+    assert "secretspace_server_setup_exe" in cmd
 
 
 def test_an_incomplete_folder_is_reported(tmp_path):
@@ -147,7 +147,7 @@ def test_build_runs_the_steps_in_order(project):
     assert build.build(project, py, r"C:\Inno\ISCC.exe", log=lambda s: None,
                        runner=runner, exists=lambda p: True)
     cmds = [" ".join(c) for c, _ in runner.calls]
-    assert "PassMan-Server.spec" in cmds[0]
+    assert "SecretSpace-Server.spec" in cmds[0]
     assert "/DAppVersion=9.8.7" in cmds[1] and "SecretSpace-Server.iss" in cmds[1]
     assert len(cmds) == 2
 
@@ -156,7 +156,7 @@ def test_only_the_server_is_built():
     """The app has its own repository and its own build."""
     steps = build.build_steps("P", build.Python(["py"], "3", "p"), "iscc", "1.0.0")
     products = [os.path.basename(product) for _, _, product in steps]
-    assert products == ["PassMan-Server.exe", "SecretSpace-Server-Installer.exe"]
+    assert products == ["SecretSpace-Server.exe", "SecretSpace-Server-Installer.exe"]
 
 
 def test_old_outputs_are_removed_before_building(project):
@@ -166,7 +166,7 @@ def test_old_outputs_are_removed_before_building(project):
 
 
 def test_build_stops_at_the_first_failure(project):
-    runner = FakeRunner({"PassMan-Server.spec": build.Result(1, "boom")})
+    runner = FakeRunner({"SecretSpace-Server.spec": build.Result(1, "boom")})
     lines = []
     ok = build.build(project, build.Python(["py"], "3", "p"), "iscc",
                      log=lines.append, runner=runner, exists=lambda p: True)

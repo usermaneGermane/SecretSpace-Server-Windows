@@ -15,7 +15,7 @@ import pytest
 from test_server_http import TOKEN, VAULT_1, server  # noqa: F401  (fixture)
 from test_server_v2 import (Account, alice, b64, put_vault,  # noqa: F401
                             session_for, signup, vault_blob)
-import passman_server                                           # noqa: E402
+import secretspace_server                                           # noqa: E402
 
 
 def new_id() -> str:
@@ -26,7 +26,7 @@ def sealed_name(size: int = 40) -> str:
     return b64(os.urandom(size))
 
 
-def wrapped_key(size: int = passman_server.WRAPPED_KEY_LEN) -> str:
+def wrapped_key(size: int = secretspace_server.WRAPPED_KEY_LEN) -> str:
     return b64(os.urandom(size))
 
 
@@ -74,7 +74,8 @@ def bob(server):
 
 def test_health_says_the_server_has_vaults(server):
     _, _, body = server.request("GET", "/health", token=None)
-    assert body["features"] == ["vaults", "sharing", "recovery", "signed-keys"]
+    assert body["features"] == ["vaults", "sharing", "recovery", "signed-keys",
+                                "format-2"]
 
 
 # --- create --------------------------------------------------------------------
@@ -107,7 +108,7 @@ def test_me_lists_the_personal_vault_first_then_the_others(server, alice):
 
 def test_the_names_size_limits_are_inclusive(server, alice):
     session = session_for(server, alice)
-    for size in (passman_server.MIN_SEALED_NAME, passman_server.MAX_SEALED_NAME):
+    for size in (secretspace_server.MIN_SEALED_NAME, secretspace_server.MAX_SEALED_NAME):
         assert create(server, session, name=sealed_name(size))[0] == 201
 
 
@@ -120,13 +121,13 @@ def test_the_names_size_limits_are_inclusive(server, alice):
     {"id": 12345},                          # not a string
     {"name": None},                         # missing
     {"name": "not base64 !!"},
-    {"name": b64(b"x" * (passman_server.MIN_SEALED_NAME - 1))},   # too short
-    {"name": b64(b"x" * (passman_server.MAX_SEALED_NAME + 1))},   # too long
+    {"name": b64(b"x" * (secretspace_server.MIN_SEALED_NAME - 1))},   # too short
+    {"name": b64(b"x" * (secretspace_server.MAX_SEALED_NAME + 1))},   # too long
     {"name": 7},
     {"wrapped_key": None},
     {"wrapped_key": "not base64 !!"},
-    {"wrapped_key": b64(os.urandom(passman_server.WRAPPED_KEY_LEN - 1))},
-    {"wrapped_key": b64(os.urandom(passman_server.WRAPPED_KEY_LEN + 1))},
+    {"wrapped_key": b64(os.urandom(secretspace_server.WRAPPED_KEY_LEN - 1))},
+    {"wrapped_key": b64(os.urandom(secretspace_server.WRAPPED_KEY_LEN + 1))},
 ])
 def test_a_bad_vault_is_refused_and_nothing_is_made(server, alice, changes):
     session = session_for(server, alice)
@@ -171,7 +172,7 @@ def test_making_a_vault_needs_a_session(server, alice, token):
 
 
 def test_the_limit_of_vaults_per_account(server, alice, bob, monkeypatch):
-    monkeypatch.setattr(passman_server, "MAX_VAULTS_PER_ACCOUNT", 3)
+    monkeypatch.setattr(secretspace_server, "MAX_VAULTS_PER_ACCOUNT", 3)
     session = session_for(server, alice)
     for _ in range(3):
         assert create(server, session)[0] == 201
@@ -184,7 +185,7 @@ def test_the_limit_of_vaults_per_account(server, alice, bob, monkeypatch):
 
 
 def test_deleting_a_vault_makes_room_under_the_limit(server, alice, monkeypatch):
-    monkeypatch.setattr(passman_server, "MAX_VAULTS_PER_ACCOUNT", 1)
+    monkeypatch.setattr(secretspace_server, "MAX_VAULTS_PER_ACCOUNT", 1)
     session = session_for(server, alice)
     view, _ = made(server, session)
     assert create(server, session)[0] == 403
@@ -236,7 +237,7 @@ def test_a_new_vault_refuses_a_file_that_is_not_pmv3(server, alice):
     view, _ = made(server, session)
     for blob in (b64(b"PMV2" + os.urandom(80)), VAULT_1):
         status, _, body = put_vault(server, session, view["id"], blob, "0")
-        assert status == 400 and "SecretSpace 3" in body["error"]
+        assert status == 400 and "not a SecretSpace vault" in body["error"]
 
 
 def test_a_vault_and_the_personal_vault_hold_separate_blobs(server, alice):
@@ -304,8 +305,8 @@ def test_the_owner_renames_a_vault(server, alice):
 
 @pytest.mark.parametrize("body", [
     {}, {"name": None}, {"name": "not base64 !!"}, {"name": 5},
-    {"name": b64(b"x" * (passman_server.MIN_SEALED_NAME - 1))},
-    {"name": b64(b"x" * (passman_server.MAX_SEALED_NAME + 1))},
+    {"name": b64(b"x" * (secretspace_server.MIN_SEALED_NAME - 1))},
+    {"name": b64(b"x" * (secretspace_server.MAX_SEALED_NAME + 1))},
 ])
 def test_a_bad_new_name_is_refused(server, alice, body):
     session = session_for(server, alice)

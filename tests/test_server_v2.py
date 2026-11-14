@@ -16,7 +16,7 @@ import pytest
 
 # First: it puts server/ on the path, and brings the running-server fixture.
 from test_server_http import TOKEN, server  # noqa: F401  (fixture)
-import passman_server                                           # noqa: E402
+import secretspace_server                                           # noqa: E402
 
 
 def b64(raw: bytes) -> str:
@@ -208,7 +208,7 @@ def test_a_disabled_account_cannot_log_in(server, alice):
 
 
 def test_too_many_wrong_logins_pause_the_account(server, alice):
-    for _ in range(passman_server.MAX_LOGIN_FAILURES):
+    for _ in range(secretspace_server.MAX_LOGIN_FAILURES):
         assert login(server, alice, login_key=os.urandom(32))[0] == 401
     # paused: even the right key waits
     status, _, body = login(server, alice)
@@ -216,10 +216,10 @@ def test_too_many_wrong_logins_pause_the_account(server, alice):
 
 
 def test_the_pause_ends(server, alice, monkeypatch):
-    for _ in range(passman_server.MAX_LOGIN_FAILURES):
+    for _ in range(secretspace_server.MAX_LOGIN_FAILURES):
         login(server, alice, login_key=os.urandom(32))
-    later = passman_server.time.time() + passman_server.LOCKOUT_SECONDS + 1
-    monkeypatch.setattr(passman_server.time, "time", lambda: later)
+    later = secretspace_server.time.time() + secretspace_server.LOCKOUT_SECONDS + 1
+    monkeypatch.setattr(secretspace_server.time, "time", lambda: later)
     assert login(server, alice)[0] == 200
 
 
@@ -249,8 +249,8 @@ def test_v2_calls_need_a_session(server, alice, token):
 
 def test_a_session_expires(server, alice, monkeypatch):
     session = session_for(server, alice)
-    later = passman_server.time.time() + passman_server.SESSION_SECONDS + 1
-    monkeypatch.setattr(passman_server.time, "time", lambda: later)
+    later = secretspace_server.time.time() + secretspace_server.SESSION_SECONDS + 1
+    monkeypatch.setattr(secretspace_server.time, "time", lambda: later)
     assert server.request("GET", "/v2/me", token=session)[0] == 401
 
 
@@ -304,7 +304,7 @@ def test_a_vault_refuses_a_2x_vault(server, alice):
     session = session_for(server, alice)
     blob = b64(b"PMV2" + os.urandom(80))
     status, _, body = put_vault(server, session, alice.vault, blob)
-    assert status == 400 and "SecretSpace 3" in body["error"]
+    assert status == 400 and "not a SecretSpace vault" in body["error"]
 
 
 def test_someone_elses_vault_is_not_there(server, alice):

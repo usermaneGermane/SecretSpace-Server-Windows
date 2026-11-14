@@ -18,10 +18,10 @@ from test_server_v2_vaults import bob, create, made, wrapped_key  # noqa: F401
 from test_server_v2_sharing import (carol, my_vault, post_rotate,  # noqa: F401
                                     put_member, rotate_body, state, team,
                                     team_up)
-import passman_server                                           # noqa: E402
+import secretspace_server                                           # noqa: E402
 
 
-def sig(size: int = passman_server.KEY_SIG_LEN) -> str:
+def sig(size: int = secretspace_server.KEY_SIG_LEN) -> str:
     return b64(os.urandom(size))
 
 

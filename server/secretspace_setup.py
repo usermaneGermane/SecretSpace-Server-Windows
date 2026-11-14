@@ -3,12 +3,14 @@
 SecretSpace sync server setup -- where it listens, its token, its firewall rule.
 
 Linux (systemd):
-    sudo python3 passman_setup.py              # ask, then write the settings
-    sudo python3 passman_setup.py new-token    # replace a leaked token
-    sudo python3 passman_setup.py show-token   # print the token
+    sudo python3 secretspace_setup.py              # ask, then write the settings
+    sudo python3 secretspace_setup.py new-token    # replace a leaked token
+    sudo python3 secretspace_setup.py show-token   # print the token
+    sudo python3 secretspace_setup.py migrate      # move an install from
+                                                   # before the rename (below)
 
 Windows (SecretSpace-Server-Installer.exe runs the first one for you):
-    PassMan-Server-Setup.exe [setup] | new-token | show-token | remove
+    SecretSpace-Server-Setup.exe [setup] | new-token | show-token | remove
 
 `setup` asks which address to listen on (listing this machine's networks)
 and which port, writes them to sync.env, creates the token if there is none
@@ -16,15 +18,22 @@ yet, and opens the port in the firewall for the networks it serves -- plus
 any other addresses you name, such as a PC on a network this machine is not
 on (`--allow-from 192.168.0.1`):
 
-- Linux: sync.env is /etc/passman/sync.env, which the systemd unit loads.
+- Linux: sync.env is /etc/secretspace/sync.env, which the systemd unit loads.
   The firewall rule is added when ufw is on; ufw is never switched on from
   here, because doing that over SSH without an SSH rule locks you out.
-- Windows: everything lives in %ProgramData%\\PassMan Server. A Windows
+- Windows: everything lives in %ProgramData%\\SecretSpace Server. A Windows
   Firewall rule and a Task Scheduler task (at startup, as LOCAL SERVICE)
   are created or replaced, and the server is (re)started.
 
 `new-token` writes a fresh token, restarts the server and prints the new
 value. Every PC then needs it in Settings -> Sync before it can sync again.
+
+`migrate` is for a server installed while the project was still called
+PassMan: it gives the folders, the service, its user and the settings the
+current names. The port, the token and the vaults stay as they are, so no PC
+needs a new setting. `migrate --dry-run` only shows what it would do;
+`migrate --undo` puts the old names back. On Windows the installer does the
+same by itself.
 
 Standard library only, like the server.
 """
@@ -40,14 +49,35 @@ import ipaddress
 import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from passman_server import DEFAULT_PORT, write_atomic          # noqa: E402
+from secretspace_server import (DEFAULT_PORT, ENV_PREFIX,       # noqa: E402
+                                LEGACY_ENV_PREFIX, write_atomic)
 
-SERVICE = "passman-sync"
-SERVICE_USER = "passman"
+SERVICE = "secretspace-sync"
+SERVICE_USER = "secretspace"
+#: Linux: where the program, its settings and its vaults live.
+PROGRAM_DIR = "/opt/secretspace"
+CONFIG_DIR = "/etc/secretspace"
+DATA_DIR = "/var/lib/secretspace"
+UNIT_DIR = "/etc/systemd/system"
+SERVER_FILE = "secretspace_server.py"
 
 #: Windows: the scheduled task, the firewall rule group and their names.
-TASK_NAME = "PassMan Sync Server"
-FIREWALL_GROUP = "PassMan Sync Server"
+TASK_NAME = "SecretSpace Sync Server"
+FIREWALL_GROUP = "SecretSpace Sync Server"
+WINDOWS_DIR = "SecretSpace Server"
+
+# The project was called PassMan until November 2026. These are an install's
+# names from then: `migrate` (and the Windows installer) move one to the
+# names above. Nothing is ever created under them.
+LEGACY_SERVICE = "passman-sync"
+LEGACY_SERVICE_USER = "passman"
+LEGACY_PROGRAM_DIR = "/opt/passman"
+LEGACY_CONFIG_DIR = "/etc/passman"
+LEGACY_DATA_DIR = "/var/lib/passman"
+LEGACY_PROGRAM_FILES = ("passman_server.py", "passman_setup.py")
+LEGACY_TASK_NAME = "PassMan Sync Server"
+LEGACY_FIREWALL_GROUP = "PassMan Sync Server"
+LEGACY_WINDOWS_DIR = "PassMan Server"
 #: Well-known SIDs, so icacls works on any Windows display language.
 SID_SYSTEM = "*S-1-5-18"
 SID_LOCAL_SERVICE = "*S-1-5-19"
@@ -59,9 +89,10 @@ MIN_PORT = 1024
 ALL_NETWORKS = "0.0.0.0"
 LOCALHOST = "127.0.0.1"
 
-#: sync.env key for the extra addresses let through the firewall. Only the
-#: setup reads it; the server ignores it.
-ALLOW_KEY = "PASSMAN_ALLOW_FROM"
+#: sync.env keys, without their prefix. ALLOW_FROM is the extra addresses
+#: let through the firewall: only the setup reads it, the server ignores it.
+SETTING_KEYS = ("HOST", "PORT", "ALLOW_FROM")
+ALLOW_KEY = ENV_PREFIX + "ALLOW_FROM"
 #: What clears the list, typed at the question or given to --allow-from.
 NONE_WORDS = ("-", "none")
 
@@ -73,8 +104,16 @@ def default_platform():
 def default_config_dir(platform):
     if platform == "windows":
         base = os.environ.get("ProgramData", r"C:\ProgramData")
-        return os.path.join(base, "PassMan Server")
-    return "/etc/passman"
+        return os.path.join(base, WINDOWS_DIR)
+    return CONFIG_DIR
+
+
+def legacy_config_dir(platform):
+    """Where an install from before the rename keeps its settings."""
+    if platform == "windows":
+        base = os.environ.get("ProgramData", r"C:\ProgramData")
+        return os.path.join(base, LEGACY_WINDOWS_DIR)
+    return LEGACY_CONFIG_DIR
 
 
 def _run(cmd):
@@ -171,14 +210,29 @@ def read_env(path):
     return values
 
 
-def render_env(host, port, allow=()):
-    text = ("# SecretSpace sync server -- written by passman_setup.py.\n"
+def read_settings(path):
+    """
+    sync.env as {"HOST", "PORT", "ALLOW_FROM"} (those that are set). A file
+    written before the rename has the old prefix on its keys; it reads the
+    same, and the next write gives it the current ones.
+    """
+    values = read_env(path)
+    found = {}
+    for key in SETTING_KEYS:
+        value = values.get(ENV_PREFIX + key, values.get(LEGACY_ENV_PREFIX + key))
+        if value is not None:
+            found[key] = value
+    return found
+
+
+def render_env(host, port, allow=(), prefix=ENV_PREFIX):
+    text = ("# SecretSpace sync server -- written by its setup.\n"
             "# Change it by running the setup again.\n"
-            f"PASSMAN_HOST={host}\n"
-            f"PASSMAN_PORT={port}\n")
+            f"{prefix}HOST={host}\n"
+            f"{prefix}PORT={port}\n")
     if allow:
         text += (f"# Also let through the firewall (the server ignores "
-                 f"this).\n{ALLOW_KEY}={','.join(allow)}\n")
+                 f"this).\n{prefix}ALLOW_FROM={','.join(allow)}\n")
     return text
 
 
@@ -394,14 +448,15 @@ def firewall_linux(run, say, new_networks, port, old_networks, old_port):
 # ---------------------------------------------------------------------------
 # Windows: Task Scheduler and Windows Firewall
 # ---------------------------------------------------------------------------
-#: The frozen server, next to PassMan-Server-Setup.exe in the install folder.
-SERVER_EXE = "PassMan-Server.exe"
+#: The frozen server, next to SecretSpace-Server-Setup.exe in the install
+#: folder.
+SERVER_EXE = "SecretSpace-Server.exe"
 
 
 def server_command(frozen=None, executable=None):
     """
     (program, arguments before ours) that start the server. Frozen, that is
-    PassMan-Server.exe beside whichever exe is running this -- the setup
+    SecretSpace-Server.exe beside whichever exe is running this -- the setup
     exe must not put itself in the startup task.
     """
     frozen = getattr(sys, "frozen", False) if frozen is None else frozen
@@ -409,7 +464,7 @@ def server_command(frozen=None, executable=None):
     if frozen:
         return os.path.join(os.path.dirname(executable), SERVER_EXE), []
     return executable, [os.path.join(os.path.dirname(
-        os.path.abspath(__file__)), "passman_server.py")]
+        os.path.abspath(__file__)), SERVER_FILE)]
 
 
 def task_arguments(config_dir, host, port, prefix=()):
@@ -510,29 +565,31 @@ def cmd_setup(args, ask=input, say=print, run=_run):
     windows = args.platform == "windows"
     env_path = os.path.join(args.config_dir, "sync.env")
     token_path = os.path.join(args.config_dir, "token")
-    current = read_env(env_path)
+    if windows and args.default_dir:
+        migrate_windows(run, say, legacy_config_dir("windows"), args.config_dir)
+    current = read_settings(env_path)
     addresses = list_addresses(run, args.platform)
-    keep = args.keep and "PASSMAN_HOST" in current and "PASSMAN_PORT" in current
+    keep = args.keep and "HOST" in current and "PORT" in current
 
     if args.host or keep:
-        host, problem = check_host(args.host or current["PASSMAN_HOST"],
+        host, problem = check_host(args.host or current["HOST"],
                                    addresses)
         if problem:
             sys.exit(problem)
     else:
         host = choose_host(ask, say, addresses,
-                           current.get("PASSMAN_HOST", ALL_NETWORKS))
+                           current.get("HOST", ALL_NETWORKS))
     if args.port or keep:
-        port, problem = check_port(str(args.port or current["PASSMAN_PORT"]))
+        port, problem = check_port(str(args.port or current["PORT"]))
         if problem:
             sys.exit(problem)
     else:
         port = choose_port(ask, say,
-                           current.get("PASSMAN_PORT", str(DEFAULT_PORT)))
+                           current.get("PORT", str(DEFAULT_PORT)))
 
     # The extra addresses: --allow-from sets them; with the other questions
     # answered by flags they stay as saved; otherwise they are asked too.
-    old_allow, _ = check_allow(current.get(ALLOW_KEY))
+    old_allow, _ = check_allow(current.get("ALLOW_FROM"))
     old_allow = old_allow or []
     if args.allow_from is not None:
         allow, problem = check_allow(",".join(args.allow_from))
@@ -543,8 +600,7 @@ def cmd_setup(args, ask=input, say=print, run=_run):
     else:
         allow = choose_allow(ask, say, old_allow)
 
-    changed = (current.get("PASSMAN_HOST"), current.get("PASSMAN_PORT")) \
-        != (host, str(port))
+    changed = (current.get("HOST"), current.get("PORT")) != (host, str(port))
     if changed and port_in_use(host if host != ALL_NETWORKS else "", port):
         say(f"Note: something is already listening on port {port}. If it is "
             f"not this server, pick another port.")
@@ -577,8 +633,8 @@ def cmd_setup(args, ask=input, say=print, run=_run):
             f"Created the task, but it did not start. Open Task Scheduler, "
             f"find '{TASK_NAME}' and check its last result.")
     else:
-        old_host = current.get("PASSMAN_HOST")
-        old_port = current.get("PASSMAN_PORT")
+        old_host = current.get("HOST")
+        old_port = current.get("PORT")
         old_sources = [*(n for _, n in networks_for(old_host, addresses)),
                        *old_allow] if old_host and old_port else []
         new_sources = [] if host == LOCALHOST else \
@@ -638,6 +694,222 @@ def cmd_remove(args, ask=input, say=print, run=_run):
         f"the settings are still in {args.config_dir}.")
 
 
+# ---------------------------------------------------------------------------
+# An install from before the rename
+# ---------------------------------------------------------------------------
+def unit_text(user=SERVICE_USER, program_dir=PROGRAM_DIR,
+              config_dir=CONFIG_DIR, data_dir=DATA_DIR) -> str:
+    """The systemd unit, as server/secretspace-sync.service ships it."""
+    return f"""[Unit]
+Description=SecretSpace sync server (encrypted vault blob store)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# These paths match the install steps in README.md. Change them only if you
+# put things somewhere else.
+User={user}
+Group={user}
+WorkingDirectory={program_dir}/server
+# Where it listens comes from {config_dir}/sync.env (the HOST and PORT
+# settings), which the setup writes: run it again to change them, no edit
+# here needed. 0.0.0.0 listens on every network this machine is on; limit
+# who can connect with the firewall (README.md, step 4). The file is
+# required on purpose: without it the server would quietly fall back to
+# 127.0.0.1, which no PC can reach.
+EnvironmentFile={config_dir}/sync.env
+ExecStart=/usr/bin/python3 {program_dir}/server/{SERVER_FILE} \\
+    --store {data_dir}/store \\
+    --token-file {config_dir}/token
+
+Restart=on-failure
+RestartSec=5
+
+# The service reads one token and writes one directory; nothing else on the
+# filesystem needs to be reachable from it.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths={data_dir}
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+#: Everything `migrate` renames on Linux, as (old, new); --undo swaps them.
+_NOW = {"service": SERVICE, "user": SERVICE_USER, "program": PROGRAM_DIR,
+        "config": CONFIG_DIR, "data": DATA_DIR, "prefix": ENV_PREFIX}
+_BEFORE = {"service": LEGACY_SERVICE, "user": LEGACY_SERVICE_USER,
+           "program": LEGACY_PROGRAM_DIR, "config": LEGACY_CONFIG_DIR,
+           "data": LEGACY_DATA_DIR, "prefix": LEGACY_ENV_PREFIX}
+
+
+def _user_exists(run, name) -> bool:
+    return ok(run(["id", "-u", name]))
+
+
+def cmd_migrate(args, ask=input, say=print, run=_run):
+    """
+    Linux: move an install from before the rename to the current names --
+    folders, service, its user, the settings' keys. The port, the token and
+    the vaults are not changed. Windows: the installer's setup step does the
+    same (migrate_windows); here it only says so.
+    """
+    if args.platform == "windows":
+        say("On Windows the installer does this: run the current "
+            "SecretSpace-Server-Installer.exe.")
+        return
+    root = getattr(args, "root", "") or ""
+
+    def at(path):
+        return os.path.join(root, path.lstrip("/")) if root else path
+
+    old, new = (_NOW, _BEFORE) if args.undo else (_BEFORE, _NOW)
+    folders = [(old[k], new[k]) for k in ("program", "config", "data")]
+    present = [(a, b) for a, b in folders if os.path.isdir(at(a))]
+    if not present:
+        say(f"Nothing to move: there is no {old['config']} here. "
+            + ("This server already has the current names."
+               if os.path.isdir(at(new["config"])) else
+               "This machine has no SecretSpace sync server."))
+        return
+    in_the_way = [b for _, b in present if os.path.exists(at(b))]
+    if in_the_way:
+        sys.exit("Both the old and the new folders exist: "
+                 + ", ".join(in_the_way) + ". Nothing was changed. Look at "
+                 "them, remove the ones that are not in use, and run this "
+                 "again.")
+
+    rename_user = _user_exists(run, old["user"]) and \
+        not _user_exists(run, new["user"])
+    say("Back up first:")
+    say("    sudo tar czf ~/secretspace-server-backup.tgz "
+        + " ".join(a for a, _ in present))
+    say("")
+    say("This will:")
+    say(f"  - stop and disable the service {old['service']}")
+    if rename_user:
+        say(f"  - rename the user and group {old['user']} to {new['user']}")
+    for a, b in present:
+        say(f"  - move {a} to {b}")
+    say(f"  - write {new['config']}/sync.env with the "
+        f"{new['prefix']}... settings")
+    say(f"  - install {new['service']}.service, remove "
+        f"{old['service']}.service, and start {new['service']}")
+    say("The port, the token and the vaults stay as they are.")
+    if args.dry_run:
+        say("")
+        say("Dry run: nothing was changed.")
+        return
+    if not args.yes and ask("Go ahead? [y/N]: ").strip().lower() not in (
+            "y", "yes"):
+        say("Nothing was changed.")
+        return
+
+    systemd = bool(shutil.which("systemctl"))
+    if systemd:
+        run(["systemctl", "stop", old["service"]])
+        run(["systemctl", "disable", old["service"]])
+    if rename_user:
+        for cmd in (["usermod", "-l", new["user"], old["user"]],
+                    ["groupmod", "-n", new["user"], old["user"]]):
+            result = run(cmd)
+            if not ok(result):
+                sys.exit(f"Could not run {' '.join(cmd)}: "
+                         f"{(result.stderr if result else '').strip()}\n"
+                         "Nothing else was changed. Start the old service "
+                         f"again with: sudo systemctl enable --now "
+                         f"{old['service']}")
+        say(f"Renamed the user {old['user']} to {new['user']}.")
+    for a, b in present:
+        os.makedirs(os.path.dirname(at(b)), exist_ok=True)
+        shutil.move(at(a), at(b))
+        say(f"Moved {a} to {b}.")
+
+    env_path = os.path.join(at(new["config"]), "sync.env")
+    settings = read_settings(env_path)
+    if "HOST" in settings and "PORT" in settings:
+        allow, _ = check_allow(settings.get("ALLOW_FROM"))
+        write_atomic(env_path, render_env(settings["HOST"], settings["PORT"],
+                                          allow or [], new["prefix"]).encode())
+        os.chmod(env_path, 0o644)
+        say(f"Wrote {new['config']}/sync.env.")
+
+    # The program files of the old name, once the current ones are beside them.
+    server_dir = os.path.join(at(new["program"]), "server")
+    if not args.undo and os.path.isfile(os.path.join(server_dir, SERVER_FILE)):
+        for name in LEGACY_PROGRAM_FILES:
+            try:
+                os.remove(os.path.join(server_dir, name))
+            except OSError:
+                pass
+
+    unit_dir = at(UNIT_DIR)
+    os.makedirs(unit_dir, exist_ok=True)
+    write_atomic(os.path.join(unit_dir, new["service"] + ".service"),
+                 unit_text(new["user"], new["program"], new["config"],
+                           new["data"]).encode())
+    try:
+        os.remove(os.path.join(unit_dir, old["service"] + ".service"))
+    except OSError:
+        pass
+    if systemd:
+        run(["systemctl", "daemon-reload"])
+        result = run(["systemctl", "enable", "--now", new["service"]])
+        say(f"Started {new['service']}." if ok(result) else
+            f"Could not start {new['service']}: "
+            f"{(result.stderr if result else '').strip()}\n"
+            f"Look at: journalctl -u {new['service']} -n 50")
+    else:
+        say("No systemd here; start the server yourself.")
+    if "PORT" in settings:
+        say(f"Check it: curl http://127.0.0.1:{settings['PORT']}/health")
+    say("The other way round: sudo python3 "
+        f"{new['program']}/server/secretspace_setup.py migrate"
+        + ("" if args.undo else " --undo"))
+
+
+def migrate_windows(run, say, old_dir, new_dir) -> bool:
+    """
+    Windows: an install from before the rename. Its task and firewall rules
+    go (the setup that follows makes the current ones), its data folder
+    moves to the current name. True when there was one. Port, token and
+    vaults are not changed.
+    """
+    if not os.path.isdir(old_dir):
+        return False
+    run(powershell(
+        f"Stop-ScheduledTask -TaskName {ps_quote(LEGACY_TASK_NAME)} "
+        "-ErrorAction SilentlyContinue; "
+        f"Unregister-ScheduledTask -TaskName {ps_quote(LEGACY_TASK_NAME)} "
+        "-Confirm:$false -ErrorAction SilentlyContinue; "
+        f"Remove-NetFirewallRule -Group {ps_quote(LEGACY_FIREWALL_GROUP)} "
+        "-ErrorAction SilentlyContinue"))
+    if os.path.exists(new_dir):
+        say(f"Both {old_dir} and {new_dir} exist; using {new_dir} and "
+            f"leaving the other alone.")
+        return True
+    try:
+        shutil.move(old_dir, new_dir)
+    except OSError as e:
+        sys.exit(f"Could not move {old_dir} to {new_dir}: {e}. Close "
+                 "anything that has it open and run the installer again.")
+    # Its settings file still has the old keys; the setup that called this
+    # reads them and writes the file again with the current ones.
+    say(f"Moved the server's data from {old_dir} to {new_dir}.")
+    return True
+
+
 #: What the menu offers, in order: (label, command).
 MENU = (("Change network, port or allowed addresses", "setup"),
         ("Replace the token", "new-token"),
@@ -646,19 +918,18 @@ MENU = (("Change network, port or allowed addresses", "setup"),
 
 def cmd_menu(args, ask=input, say=print, run=_run):
     """
-    Everything in one place: what PassMan-Server-Setup.exe shows when it is
+    Everything in one place: what SecretSpace-Server-Setup.exe shows when it is
     double-clicked. Each choice runs its command, then the menu comes back,
     until Close.
     """
     env_path = os.path.join(args.config_dir, "sync.env")
     close = str(len(MENU) + 1)
     while True:
-        current = read_env(env_path)
+        current = read_settings(env_path)
         say("")
         say("SecretSpace sync server")
-        if "PASSMAN_HOST" in current and "PASSMAN_PORT" in current:
-            say(f"  Listening on {current['PASSMAN_HOST']}:"
-                f"{current['PASSMAN_PORT']}")
+        if "HOST" in current and "PORT" in current:
+            say(f"  Listening on {current['HOST']}:{current['PORT']}")
         else:
             say("  Not set up yet.")
         say("")
@@ -686,7 +957,7 @@ def cmd_menu(args, ask=input, say=print, run=_run):
 
 COMMANDS = {"setup": cmd_setup, "new-token": cmd_new_token,
             "show-token": cmd_show_token, "remove": cmd_remove,
-            "menu": cmd_menu}
+            "menu": cmd_menu, "migrate": cmd_migrate}
 
 
 def is_admin(platform):
@@ -717,8 +988,8 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.strip().split("\n")[0])
     parser.add_argument("--config-dir",
                         help="where sync.env and the token live (default: "
-                             "/etc/passman, or %%ProgramData%%\\PassMan "
-                             "Server on Windows)")
+                             "/etc/secretspace, or %%ProgramData%%\\"
+                             "SecretSpace Server on Windows)")
     parser.add_argument("--platform", choices=("linux", "windows"),
                         default=default_platform(), help=argparse.SUPPRESS)
     parser.add_argument("--pause", action="store_true",
@@ -742,9 +1013,19 @@ def parse_args(argv):
     sub.add_parser("show-token", help="print the token")
     sub.add_parser("remove", help="Windows: remove the task and firewall rule")
     sub.add_parser("menu", help="choose one of the above from a list")
+    migrate = sub.add_parser("migrate", help="Linux: give an install from "
+                             "before the rename the current names")
+    migrate.add_argument("--dry-run", action="store_true",
+                         help="only show what would be done")
+    migrate.add_argument("--undo", action="store_true",
+                         help="put the old names back")
+    migrate.add_argument("--yes", action="store_true",
+                         help="do not ask for confirmation")
+    migrate.add_argument("--root", default="", help=argparse.SUPPRESS)
     # No command means setup, with every question asked.
     parser.set_defaults(command="setup", host=None, port=None, keep=False,
-                        allow_from=None, yes=False)
+                        allow_from=None, yes=False, dry_run=False, undo=False,
+                        root="")
     args = parser.parse_args(argv)
     args.default_dir = args.config_dir is None
     if args.config_dir is None:
@@ -754,7 +1035,11 @@ def parse_args(argv):
 
 def main(argv=None, ask=input, say=print, run=_run):
     args = parse_args(argv)
-    if args.default_dir and not is_admin(args.platform):
+    if args.command == "migrate" and args.platform != "windows" \
+            and not args.root and not args.dry_run and not is_admin("linux"):
+        sys.exit("Run it with sudo: it renames the service and its folders.")
+    if args.default_dir and args.command != "migrate" \
+            and not is_admin(args.platform):
         sys.exit("Run it as administrator: it writes to "
                  f"{args.config_dir}." if args.platform == "windows" else
                  f"Run it with sudo: it writes to {args.config_dir}.")

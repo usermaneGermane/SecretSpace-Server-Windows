@@ -20,7 +20,6 @@ server/token
 # What builder\build.py writes here. Publish it as a release asset rather
 # than committing it.
 SecretSpace-Server-Installer.exe
-PassMan-Server-Installer.exe
 
 # Working notes, kept locally.
 TODO.txt
