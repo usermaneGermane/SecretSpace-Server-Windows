@@ -1783,6 +1783,64 @@ def open_log(path):
     return StampedLog(open(path, "a", encoding="utf-8"))
 
 
+#: How long a client may take over the TLS handshake before it is dropped.
+TLS_HANDSHAKE_SECONDS = 15
+
+
+class SyncServer(ThreadingHTTPServer):
+    """
+    The HTTP server, and with ``ssl_context`` set the HTTPS one. The TLS
+    handshake happens in the connection's own thread, not in the one that
+    accepts connections: wrapping the listening socket would make every
+    client wait while one slow (or hostile) client takes its time.
+    """
+
+    ssl_context = None
+
+    def finish_request(self, request, client_address):
+        if self.ssl_context is not None:
+            request.settimeout(TLS_HANDSHAKE_SECONDS)
+            try:
+                request = self.ssl_context.wrap_socket(request, server_side=True)
+            except (ssl.SSLError, OSError):
+                # Plain HTTP to an HTTPS port, a scanner, a client that
+                # does not trust the certificate: nothing to answer.
+                try:
+                    request.close()
+                except OSError:
+                    pass
+                return
+            request.settimeout(None)
+        super().finish_request(request, client_address)
+
+
+def tls_context(cert: str, key: str) -> ssl.SSLContext:
+    """The server's TLS settings: its certificate and key, TLS 1.2 or newer."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(cert, key)
+    return context
+
+
+def resolve_tls(args, environ=None):
+    """
+    (certificate, key) to serve HTTPS with, or (None, None) for plain HTTP:
+    the flags win, then $SECRETSPACE_CERT / $SECRETSPACE_KEY -- which is how
+    the setup tool's `tls` command turns HTTPS on without the unit file
+    changing.
+    """
+    environ = os.environ if environ is None else environ
+    cert = args.cert or env_setting(environ, "CERT") or None
+    key = args.key or env_setting(environ, "KEY") or None
+    if cert and not key:
+        sys.exit("A TLS certificate also needs its key (--key or "
+                 f"{ENV_PREFIX}KEY).")
+    if key and not cert:
+        sys.exit("A TLS key also needs its certificate (--cert or "
+                 f"{ENV_PREFIX}CERT).")
+    return cert, key
+
+
 def bind(host, port, retry_seconds=0, sleep=None):
     """
     The listening server. With retry_seconds, an address that is not there
@@ -1793,7 +1851,7 @@ def bind(host, port, retry_seconds=0, sleep=None):
     warned = False
     while True:
         try:
-            return ThreadingHTTPServer((host, port), Handler)
+            return SyncServer((host, port), Handler)
         except OSError as e:
             if not retry_seconds:
                 raise
@@ -1820,8 +1878,11 @@ def main(argv=None):
     parser.add_argument("--store", default=os.path.join(here, "store"),
                         help="directory for the encrypted blobs")
     parser.add_argument("--token-file", help="file holding the shared token")
-    parser.add_argument("--cert", help="TLS certificate (enables HTTPS)")
-    parser.add_argument("--key", help="TLS private key")
+    parser.add_argument("--cert", help="TLS certificate, PEM (enables HTTPS; "
+                        "default: $SECRETSPACE_CERT, which the setup's `tls` "
+                        "command writes)")
+    parser.add_argument("--key", help="TLS private key, PEM (default: "
+                        "$SECRETSPACE_KEY)")
     parser.add_argument("--log-file",
                         help="write the log here, with timestamps, instead "
                              "of to the console (Windows: nothing reads the "
@@ -1846,12 +1907,14 @@ def main(argv=None):
     os.makedirs(httpd.store.root, exist_ok=True)
 
     scheme = "http"
-    if args.cert:
-        if not args.key:
-            sys.exit("--cert also needs --key.")
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(args.cert, args.key)
-        httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+    cert, key = resolve_tls(args)
+    if cert:
+        try:
+            httpd.ssl_context = tls_context(cert, key)
+        except (OSError, ssl.SSLError) as e:
+            sys.exit(f"Cannot use the TLS certificate {cert} with the key "
+                     f"{key}: {e}. Make them again with the setup's `tls` "
+                     "command, or check that this user can read them.")
         scheme = "https"
 
     # flush: under systemd stdout is a pipe and fully buffered, so without it
@@ -1862,7 +1925,8 @@ def main(argv=None):
     if scheme == "http" and args.host not in ("127.0.0.1", "localhost"):
         print("NOTE: plain HTTP on a network address. Vaults are encrypted "
               "either way, but the sync token travels in the clear -- fine on "
-              "a home network or VPN you trust; see README.md for TLS.")
+              "a home network or VPN you trust; the setup's `tls` command "
+              "turns HTTPS on.")
     sys.stdout.flush()
     try:
         httpd.serve_forever()

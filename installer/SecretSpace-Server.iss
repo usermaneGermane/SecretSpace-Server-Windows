@@ -75,6 +75,7 @@ Source: "..\build\server\SecretSpace-Server\*"; DestDir: "{app}"; Flags: ignorev
 [Icons]
 Name: "{autoprograms}\SecretSpace Server\Change network or port"; Filename: "{app}\SecretSpace-Server-Setup.exe"; Parameters: "--pause setup"
 Name: "{autoprograms}\SecretSpace Server\Show the token"; Filename: "{app}\SecretSpace-Server-Setup.exe"; Parameters: "--pause show-token"
+Name: "{autoprograms}\SecretSpace Server\Turn HTTPS on"; Filename: "{app}\SecretSpace-Server-Setup.exe"; Parameters: "--pause tls"
 Name: "{autoprograms}\SecretSpace Server\Replace the token"; Filename: "{app}\SecretSpace-Server-Setup.exe"; Parameters: "--pause new-token"
 Name: "{autoprograms}\SecretSpace Server\Server log"; Filename: "{commonappdata}\SecretSpace Server\logs\server.log"
 

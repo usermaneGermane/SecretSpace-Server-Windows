@@ -621,7 +621,7 @@ def test_bind_retries_an_address_that_is_not_there_yet(monkeypatch):
         if len(attempts) < 3:
             raise OSError(10049, "not there")
         return "server"
-    monkeypatch.setattr(secretspace_server, "ThreadingHTTPServer", flaky)
+    monkeypatch.setattr(secretspace_server, "SyncServer", flaky)
     slept = []
     assert secretspace_server.bind("10.9.9.9", 9000, 10, sleep=slept.append) == \
         "server"
@@ -631,7 +631,7 @@ def test_bind_retries_an_address_that_is_not_there_yet(monkeypatch):
 def test_bind_without_retry_fails_at_once(monkeypatch):
     def broken(address, handler):
         raise OSError(10049, "not there")
-    monkeypatch.setattr(secretspace_server, "ThreadingHTTPServer", broken)
+    monkeypatch.setattr(secretspace_server, "SyncServer", broken)
     with pytest.raises(OSError):
         secretspace_server.bind("10.9.9.9", 9000)
 
@@ -668,25 +668,26 @@ def test_the_setup_program_double_clicked_opens_the_menu(monkeypatch):
 
 def test_the_menu_offers_network_port_and_the_token(tmp_path):
     run_setup(tmp_path, argv=["setup", "--host", "10.8.0.1", "--port", "9000"])
-    out, _ = run_setup(tmp_path, answers=["4"], argv=["menu"])
+    out, _ = run_setup(tmp_path, answers=["5"], argv=["menu"])
     assert "Listening on 10.8.0.1:9000" in out
     assert "1) Change network, port or allowed addresses" in out
     assert "2) Replace the token" in out
     assert "3) Show the token" in out
-    assert "4) Close" in out
+    assert "4) Turn HTTPS on (a new certificate)" in out
+    assert "5) Close" in out
 
 
 def test_the_menu_replaces_the_token(tmp_path):
     run_setup(tmp_path, argv=["setup", "--host", "10.8.0.1", "--port", "9000"])
     old = (tmp_path / "token").read_text().strip()
-    out, _ = run_setup(tmp_path, answers=["2", "y", "4"], argv=["menu"])
+    out, _ = run_setup(tmp_path, answers=["2", "y", "5"], argv=["menu"])
     new = (tmp_path / "token").read_text().strip()
     assert new != old and new in out
 
 
 def test_the_menu_changes_the_port_then_comes_back(tmp_path):
     run_setup(tmp_path, argv=["setup", "--host", "10.8.0.1", "--port", "9000"])
-    out, _ = run_setup(tmp_path, answers=["1", "", "9443", "", "3", "4"],
+    out, _ = run_setup(tmp_path, answers=["1", "", "9443", "", "3", "5"],
                        argv=["menu"])
     assert secretspace_setup.read_env(tmp_path / "sync.env")["SECRETSPACE_PORT"] == \
         "9443"
@@ -696,14 +697,14 @@ def test_the_menu_changes_the_port_then_comes_back(tmp_path):
 
 
 def test_the_menu_shows_a_problem_and_carries_on(tmp_path):
-    out, _ = run_setup(tmp_path, answers=["3", "4"], argv=["menu"])
+    out, _ = run_setup(tmp_path, answers=["3", "5"], argv=["menu"])
     assert "Not set up yet." in out
     assert "no token yet" in out           # show-token stopped; menu did not
 
 
 def test_the_menu_asks_again_after_a_wrong_choice(tmp_path):
-    out, _ = run_setup(tmp_path, answers=["9", "x", "4"], argv=["menu"])
-    assert out.count("Type a number from 1 to 4.") == 2
+    out, _ = run_setup(tmp_path, answers=["9", "x", "5"], argv=["menu"])
+    assert out.count("Type a number from 1 to 5.") == 2
 
 
 def test_the_menu_closes_on_end_of_input(tmp_path):
@@ -720,7 +721,7 @@ def test_the_menu_does_not_add_a_second_press_enter(tmp_path):
     asked = []
     secretspace_setup.main(["--config-dir", str(tmp_path), "--platform", "linux",
                         "--pause", "menu"],
-                       ask=lambda prompt: asked.append(prompt) or "4",
+                       ask=lambda prompt: asked.append(prompt) or "5",
                        say=lambda line: None, run=FakeSystem())
     assert asked == ["Choice: "]
 
