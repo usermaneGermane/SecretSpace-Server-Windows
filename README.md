@@ -20,7 +20,7 @@ Installing 2.1.0 over an older server moves all of that by itself and
 changes neither the port, the token nor the vaults: see
 [Upgrading a server from before 2.1.0](#upgrading-a-server-from-before-210).
 
-**Which apps it serves.** Server **2.1.0** serves every line of the app:
+**Which apps it serves.** Server **2.2.0** serves every line of the app:
 
 - **SecretSpace 4** (Windows 4.0.0, Linux 2.0.0): accounts and vaults in the
   current format. It needs this version of the server.
@@ -296,14 +296,36 @@ networks this PC is on.
 ## Plain HTTP
 
 Your vault is encrypted before it leaves your PC, so nothing on the network
-can read your passwords. What plain HTTP exposes is the **sync token**:
-someone else on the same network could capture it, then read or overwrite
-the encrypted blobs — without being able to decrypt them. On a home network
-or a VPN you trust, that is usually acceptable.
+can read your passwords whether or not TLS is on. What plain HTTP exposes is
+the login: someone on the same network could capture it and act as your
+account on the server — read or overwrite the encrypted blobs, never decrypt
+them. On a home network or a VPN you trust, that may be acceptable; HTTPS
+closes it.
 
-The server can serve TLS with a pinned self-signed certificate (`--cert`,
-`--key`; SecretSpace-Server-Linux's README shows how), but the Windows setup does
-not set that up yet.
+**Turn HTTPS on** from the Start Menu (*SecretSpace Server → Turn HTTPS
+on*), or in an administrator console:
+
+```
+"C:\Program Files\SecretSpace Server\SecretSpace-Server-Setup.exe" tls
+```
+
+It needs `openssl`, which Git for Windows brings
+(`C:\Program Files\Git\usr\bin` on the `PATH`). It makes a certificate
+for the addresses this PC is reached at (an EC P-256 key, valid ten years),
+keeps it in `%ProgramData%\SecretSpace Server` (`server.key` readable by the
+service account only), points the startup task at it and restarts the
+server. Then, on each device:
+
+1. Copy `server.crt` from that folder to the device. It is not secret; the
+   key never leaves this PC.
+2. In SecretSpace, *Settings → Sync → Set up…*: change the address to
+   `https://…` (same address and port) and choose the copied file as the
+   certificate file. The app keeps your vaults' sync state: it is the same
+   server.
+
+The app **pins** that certificate, so a machine pretending to be the server
+is refused. `tls show` says what is in use, `tls off` goes back to plain
+HTTP, `tls` again makes a new certificate (every device then needs it).
 
 ## API
 

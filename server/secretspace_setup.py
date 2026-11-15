@@ -6,6 +6,7 @@ Linux (systemd):
     sudo python3 secretspace_setup.py              # ask, then write the settings
     sudo python3 secretspace_setup.py new-token    # replace a leaked token
     sudo python3 secretspace_setup.py show-token   # print the token
+    sudo python3 secretspace_setup.py tls          # turn HTTPS on (below)
     sudo python3 secretspace_setup.py migrate      # move an install from
                                                    # before the rename (below)
 
@@ -27,6 +28,12 @@ on (`--allow-from 192.168.0.1`):
 
 `new-token` writes a fresh token, restarts the server and prints the new
 value. Every PC then needs it in Settings -> Sync before it can sync again.
+
+`tls` turns HTTPS on: it makes a certificate for the addresses this server
+is reached at (with `openssl`), keeps it beside the token, and restarts the
+server. Each device then uses https:// and that certificate file, which the
+app pins -- so a machine pretending to be the server is refused. `tls off`
+goes back to plain HTTP; `tls show` says what is in use.
 
 `migrate` is for a server installed while the project was still called
 PassMan: it gives the folders, the service, its user and the settings the
@@ -91,7 +98,7 @@ LOCALHOST = "127.0.0.1"
 
 #: sync.env keys, without their prefix. ALLOW_FROM is the extra addresses
 #: let through the firewall: only the setup reads it, the server ignores it.
-SETTING_KEYS = ("HOST", "PORT", "ALLOW_FROM")
+SETTING_KEYS = ("HOST", "PORT", "ALLOW_FROM", "CERT", "KEY")
 ALLOW_KEY = ENV_PREFIX + "ALLOW_FROM"
 #: What clears the list, typed at the question or given to --allow-from.
 NONE_WORDS = ("-", "none")
@@ -225,7 +232,8 @@ def read_settings(path):
     return found
 
 
-def render_env(host, port, allow=(), prefix=ENV_PREFIX):
+def render_env(host, port, allow=(), prefix=ENV_PREFIX, tls=None):
+    """sync.env. ``tls``: (certificate, key) when HTTPS is on."""
     text = ("# SecretSpace sync server -- written by its setup.\n"
             "# Change it by running the setup again.\n"
             f"{prefix}HOST={host}\n"
@@ -233,7 +241,17 @@ def render_env(host, port, allow=(), prefix=ENV_PREFIX):
     if allow:
         text += (f"# Also let through the firewall (the server ignores "
                  f"this).\n{prefix}ALLOW_FROM={','.join(allow)}\n")
+    if tls:
+        text += (f"# HTTPS (the setup's `tls` command).\n"
+                 f"{prefix}CERT={tls[0]}\n{prefix}KEY={tls[1]}\n")
     return text
+
+
+def tls_of(settings):
+    """(certificate, key) from read_settings, or None."""
+    if settings.get("CERT") and settings.get("KEY"):
+        return settings["CERT"], settings["KEY"]
+    return None
 
 
 def check_allow(text):
@@ -467,13 +485,14 @@ def server_command(frozen=None, executable=None):
         os.path.abspath(__file__)), SERVER_FILE)]
 
 
-def task_arguments(config_dir, host, port, prefix=()):
+def task_arguments(config_dir, host, port, prefix=(), tls=None):
     return subprocess.list2cmdline([
         *prefix, "--host", host, "--port", str(port),
         "--store", os.path.join(config_dir, "store"),
         "--token-file", os.path.join(config_dir, "token"),
         "--log-file", os.path.join(config_dir, "logs", "server.log"),
-        "--retry-bind", "10"])
+        "--retry-bind", "10",
+        *(["--cert", tls[0], "--key", tls[1]] if tls else [])])
 
 
 def register_task(run, program, arguments):
@@ -542,18 +561,19 @@ def windows_folders(run, config_dir):
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
-def next_steps(host, port, addresses, allow=()):
+def next_steps(host, port, addresses, allow=(), https=False):
     """What to type on the PCs."""
+    scheme = "https" if https else "http"
     lines = []
     targets = networks_for(host, addresses)
     if host == LOCALHOST:
         lines.append("Listening on this machine only: no PC can connect.")
         return lines
     if host == ALL_NETWORKS and not targets:
-        lines.append(f"PCs: enter http://<this machine's address>:{port} in "
-                     f"Settings -> Sync.")
+        lines.append(f"PCs: enter {scheme}://<this machine's address>:{port} "
+                     f"in Settings -> Sync.")
     for address, network in targets:
-        lines.append(f"PCs on {network}: enter http://{address}:{port} in "
+        lines.append(f"PCs on {network}: enter {scheme}://{address}:{port} in "
                      f"Settings -> Sync.")
     if allow:
         lines.append(f"Also let in: {', '.join(allow)} -- they use whichever "
@@ -606,7 +626,8 @@ def cmd_setup(args, ask=input, say=print, run=_run):
             f"not this server, pick another port.")
 
     os.makedirs(args.config_dir, exist_ok=True)
-    write_atomic(env_path, render_env(host, port, allow).encode())
+    tls = tls_of(current)
+    write_atomic(env_path, render_env(host, port, allow, tls=tls).encode())
     if not windows:
         os.chmod(env_path, 0o644)
     say(f"Wrote {env_path}: listening on {host}:{port}.")
@@ -624,7 +645,7 @@ def cmd_setup(args, ask=input, say=print, run=_run):
         say(firewall_windows(run, host, port, addresses, allow))
         program, prefix = server_command()
         result = register_task(run, program, task_arguments(
-            args.config_dir, host, port, prefix))
+            args.config_dir, host, port, prefix, tls))
         if not ok(result):
             sys.exit(f"Could not create the scheduled task: "
                      f"{(result.stderr if result else '').strip()}")
@@ -644,7 +665,15 @@ def cmd_setup(args, ask=input, say=print, run=_run):
                            int(old_port or 0))
         if changed:
             say(restart_service(run))
-    for line in next_steps(host, port, addresses, allow):
+    if tls and changed:
+        covered = certificate_addresses(tls[0])
+        missing = [a for a, _ in networks_for(host, addresses)
+                   if a not in covered]
+        if missing:
+            say(f"HTTPS is on, but its certificate does not cover "
+                f"{', '.join(missing)}. Run the `tls` command again, then "
+                f"copy the new certificate to the devices.")
+    for line in next_steps(host, port, addresses, allow, bool(tls)):
         say(line)
 
 
@@ -816,6 +845,10 @@ def cmd_migrate(args, ask=input, say=print, run=_run):
         say("Nothing was changed.")
         return
 
+    # Before the README had the `tls` command, HTTPS was turned on by adding
+    # --cert and --key to the unit file by hand. The new unit does not have
+    # them, so they are carried into sync.env instead of being lost.
+    old_unit_tls = unit_tls(os.path.join(at(UNIT_DIR), old["service"] + ".service"))
     systemd = bool(shutil.which("systemctl"))
     if systemd:
         run(["systemctl", "stop", old["service"]])
@@ -840,10 +873,19 @@ def cmd_migrate(args, ask=input, say=print, run=_run):
     settings = read_settings(env_path)
     if "HOST" in settings and "PORT" in settings:
         allow, _ = check_allow(settings.get("ALLOW_FROM"))
+        tls = tls_of(settings) or old_unit_tls
+        if tls:
+            # The certificate moved with its folder.
+            tls = tuple(path.replace(old["config"], new["config"], 1)
+                        for path in tls)
         write_atomic(env_path, render_env(settings["HOST"], settings["PORT"],
-                                          allow or [], new["prefix"]).encode())
+                                          allow or [], new["prefix"],
+                                          tls).encode())
         os.chmod(env_path, 0o644)
         say(f"Wrote {new['config']}/sync.env.")
+        if old_unit_tls and not tls_of(settings):
+            say("Your old unit served HTTPS (--cert/--key); that is now in "
+                "sync.env, so it stays on.")
 
     # The program files of the old name, once the current ones are beside them.
     server_dir = os.path.join(at(new["program"]), "server")
@@ -910,10 +952,223 @@ def migrate_windows(run, say, old_dir, new_dir) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# HTTPS
+# ---------------------------------------------------------------------------
+CERT_FILE = "server.crt"
+KEY_FILE = "server.key"
+#: How long a certificate made here is valid. A self-signed certificate that
+#: the devices pin is not checked against any authority, so a short life buys
+#: nothing but a day when every device stops syncing.
+CERT_DAYS = 3650
+
+
+def unit_tls(path):
+    """(certificate, key) from the --cert/--key of a unit file, or None."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            words = f.read().replace("\\\n", " ").split()
+    except OSError:
+        return None
+    found = {}
+    for flag in ("--cert", "--key"):
+        if flag in words and words.index(flag) + 1 < len(words):
+            found[flag] = words[words.index(flag) + 1]
+    if "--cert" in found and "--key" in found:
+        return found["--cert"], found["--key"]
+    return None
+
+
+def certificate_addresses(cert_path):
+    """The IP addresses a certificate is made for (its subjectAltName)."""
+    try:
+        import ssl
+        decoded = ssl._ssl._test_decode_cert(cert_path)
+    except Exception:
+        return []
+    return [value for kind, value in decoded.get("subjectAltName", ())
+            if kind == "IP Address"]
+
+
+def certificate_fingerprint(cert_path):
+    """SHA-256 of the certificate, as the colon-separated hex browsers show."""
+    import hashlib
+    import ssl
+    with open(cert_path, encoding="ascii") as f:
+        der = ssl.PEM_cert_to_DER_cert(f.read())
+    digest = hashlib.sha256(der).hexdigest().upper()
+    return ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
+
+
+def tls_addresses(host, addresses):
+    """What the certificate must name: every address the devices may use."""
+    found = [a for a, _ in networks_for(host, addresses)]
+    if host not in (ALL_NETWORKS, LOCALHOST) and host not in found:
+        found.append(host)
+    found.append(LOCALHOST)
+    return list(dict.fromkeys(found))
+
+
+def make_certificate(run, cert_path, key_path, ips, names):
+    """
+    A self-signed certificate and its key, with openssl: an EC P-256 key, the
+    addresses and names it serves in subjectAltName (what a TLS client checks;
+    the CN is ignored). Returns None, or a message saying what went wrong.
+    """
+    openssl = shutil.which("openssl")
+    if not openssl:
+        return ("openssl is not installed. On Ubuntu: sudo apt install "
+                "openssl. On Windows it comes with Git for Windows "
+                "(C:\\Program Files\\Git\\usr\\bin), or turn HTTPS on by hand "
+                "as README.md describes.")
+    san = ",".join([f"IP:{ip}" for ip in ips] + [f"DNS:{n}" for n in names])
+    result = run([openssl, "req", "-x509", "-newkey", "ec",
+                  "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+                  "-sha256", "-days", str(CERT_DAYS),
+                  "-keyout", key_path, "-out", cert_path,
+                  "-subj", "/CN=SecretSpace sync server",
+                  "-addext", f"subjectAltName={san}",
+                  "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+                  "-addext", "keyUsage=critical,digitalSignature,keyCertSign",
+                  "-addext", "extendedKeyUsage=serverAuth"])
+    if not ok(result):
+        return ("openssl could not make the certificate: "
+                f"{(result.stderr if result else '').strip()}")
+    return None
+
+
+def protect_key(run, path, platform):
+    """The private key: the service account and administrators only."""
+    if platform == "windows":
+        run(["icacls", path, "/inheritance:r", "/grant:r",
+             f"{SID_SYSTEM}:F", f"{SID_ADMINS}:F", f"{SID_LOCAL_SERVICE}:R"])
+    else:
+        os.chmod(path, 0o600)
+        _own_file(path)
+
+
+def restart_server(run, platform, config_dir, settings):
+    """Restart with the settings now in sync.env. Returns what happened."""
+    if platform != "windows":
+        return restart_service(run)
+    program, prefix = server_command()
+    result = register_task(run, program, task_arguments(
+        config_dir, settings["HOST"], settings["PORT"], prefix,
+        tls_of(settings)))
+    if not ok(result):
+        return ("Could not update the scheduled task: "
+                f"{(result.stderr if result else '').strip()}")
+    return ("Restarted the server." if restart_task(run) else
+            f"Restart '{TASK_NAME}' in Task Scheduler to use it.")
+
+
+def cmd_tls(args, ask=input, say=print, run=_run):
+    """
+    HTTPS on (`tls`), off (`tls off`), or what is in use (`tls show`).
+    Turning it on makes a new certificate every time: the devices then need
+    the new certificate file.
+    """
+    env_path = os.path.join(args.config_dir, "sync.env")
+    settings = read_settings(env_path)
+    if "HOST" not in settings or "PORT" not in settings:
+        sys.exit("Run the setup first: there is no sync.env yet.")
+    host, port = settings["HOST"], settings["PORT"]
+    allow, _ = check_allow(settings.get("ALLOW_FROM"))
+    current = tls_of(settings)
+    action = args.action or "on"
+
+    if action == "show":
+        if not current:
+            say(f"HTTPS is off: the server answers on http://...:{port}.")
+            return
+        say(f"HTTPS is on, with {current[0]}.")
+        covered = certificate_addresses(current[0])
+        if covered:
+            say(f"  It is made for: {', '.join(covered)}")
+        try:
+            say(f"  SHA-256: {certificate_fingerprint(current[0])}")
+        except (OSError, ValueError) as e:
+            say(f"  It cannot be read: {e}")
+        return
+
+    if action == "off":
+        if not current:
+            say("HTTPS is already off.")
+            return
+        if not args.yes and ask(
+                "Turn HTTPS off? Every device then needs http:// again. "
+                "[y/N]: ").strip().lower() not in ("y", "yes"):
+            say("Nothing changed.")
+            return
+        write_atomic(env_path, render_env(host, port, allow or []).encode())
+        if args.platform != "windows":
+            os.chmod(env_path, 0o644)
+        say(f"HTTPS is off; the certificate files stay in {args.config_dir}.")
+        fresh = read_settings(env_path)
+        say(restart_server(run, args.platform, args.config_dir, fresh))
+        say(f"On each device: Settings -> Sync, change the address to "
+            f"http://...:{port} and clear the certificate file.")
+        return
+
+    if host == LOCALHOST:
+        sys.exit("The server listens on this machine only; HTTPS would protect "
+                 "nothing. Run the setup to choose a network first.")
+    addresses = list_addresses(run, args.platform)
+    ips = tls_addresses(host, addresses)
+    names = list(dict.fromkeys(
+        n for n in (socket.gethostname(), "localhost") if n))
+    if current and not args.yes:
+        say("HTTPS is on already. A new certificate replaces the old one: "
+            "every device then needs the new certificate file.")
+        if ask("Make a new certificate? [y/N]: ").strip().lower() not in (
+                "y", "yes"):
+            say("Nothing changed.")
+            return
+    os.makedirs(args.config_dir, exist_ok=True)
+    cert = os.path.join(args.config_dir, CERT_FILE)
+    key = os.path.join(args.config_dir, KEY_FILE)
+    # Made beside the old pair and swapped in only once both exist, so a
+    # failure leaves the server's working certificate alone.
+    new_cert, new_key = cert + ".new", key + ".new"
+    problem = make_certificate(run, new_cert, new_key, ips, names)
+    if problem:
+        for leftover in (new_cert, new_key):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+        sys.exit(problem)
+    protect_key(run, new_key, args.platform)
+    if args.platform != "windows":
+        os.chmod(new_cert, 0o644)
+    os.replace(new_key, key)
+    os.replace(new_cert, cert)
+    write_atomic(env_path, render_env(host, port, allow or [],
+                                      tls=(cert, key)).encode())
+    if args.platform != "windows":
+        os.chmod(env_path, 0o644)
+    say(f"Made a certificate for {', '.join(ips)} "
+        f"(and {', '.join(names)}), valid {CERT_DAYS // 365} years.")
+    say(f"  {cert}")
+    say(f"  SHA-256: {certificate_fingerprint(cert)}")
+    say(restart_server(run, args.platform, args.config_dir,
+                       read_settings(env_path)))
+    say("")
+    say("On each device:")
+    say(f"  1. Copy {cert} to it (it is not secret; the key stays here).")
+    for address, network in networks_for(host, addresses) or [("<address>", "")]:
+        say(f"  2. Settings -> Sync: address https://{address}:{port}, "
+            f"certificate file = the copied {CERT_FILE}.")
+        break
+    say("  The app checks the server against that file, so a machine that "
+        "pretends to be the server is refused.")
+
+
 #: What the menu offers, in order: (label, command).
 MENU = (("Change network, port or allowed addresses", "setup"),
         ("Replace the token", "new-token"),
-        ("Show the token", "show-token"))
+        ("Show the token", "show-token"),
+        ("Turn HTTPS on (a new certificate)", "tls"))
 
 
 def cmd_menu(args, ask=input, say=print, run=_run):
@@ -957,7 +1212,7 @@ def cmd_menu(args, ask=input, say=print, run=_run):
 
 COMMANDS = {"setup": cmd_setup, "new-token": cmd_new_token,
             "show-token": cmd_show_token, "remove": cmd_remove,
-            "menu": cmd_menu, "migrate": cmd_migrate}
+            "menu": cmd_menu, "migrate": cmd_migrate, "tls": cmd_tls}
 
 
 def is_admin(platform):
@@ -1022,10 +1277,16 @@ def parse_args(argv):
     migrate.add_argument("--yes", action="store_true",
                          help="do not ask for confirmation")
     migrate.add_argument("--root", default="", help=argparse.SUPPRESS)
+    tls = sub.add_parser("tls", help="HTTPS: on (a new certificate), off, or "
+                         "show what is in use")
+    tls.add_argument("action", nargs="?", choices=("on", "off", "show"),
+                     default="on")
+    tls.add_argument("--yes", action="store_true",
+                     help="do not ask for confirmation")
     # No command means setup, with every question asked.
     parser.set_defaults(command="setup", host=None, port=None, keep=False,
                         allow_from=None, yes=False, dry_run=False, undo=False,
-                        root="")
+                        root="", action=None)
     args = parser.parse_args(argv)
     args.default_dir = args.config_dir is None
     if args.config_dir is None:
