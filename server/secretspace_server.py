@@ -23,6 +23,7 @@ install. See README.md for deployment.
 
 import os
 import re
+import socket
 import ssl
 import sys
 import json
@@ -1811,7 +1812,49 @@ class SyncServer(ThreadingHTTPServer):
                     pass
                 return
             request.settimeout(None)
+            try:
+                super().finish_request(request, client_address)
+            finally:
+                # The plain socket was handed to TLS; shutdown_request below
+                # gets only its empty shell, so the TLS one is ended here.
+                self._end_gracefully(request)
+            return
         super().finish_request(request, client_address)
+
+    #: What is read away from a client at the end of its connection, at most.
+    DRAIN_BYTES = MAX_BODY
+    DRAIN_SECONDS = 2
+
+    def _end_gracefully(self, request):
+        """
+        Half-close, read away what the client still sends, then close. A
+        close while unread data waits (a body the server refused without
+        reading it) is a reset, and a reset can destroy the answer that was
+        already sent before the client has read it.
+        """
+        try:
+            request.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        try:
+            request.settimeout(self.DRAIN_SECONDS)
+            left = self.DRAIN_BYTES
+            while left > 0:
+                chunk = request.recv(min(65536, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except (OSError, ValueError):
+            pass
+        try:
+            request.close()
+        except OSError:
+            pass
+
+    def shutdown_request(self, request):
+        if request.fileno() == -1:       # handed to TLS and ended already
+            return
+        self._end_gracefully(request)
 
 
 def tls_context(cert: str, key: str) -> ssl.SSLContext:
