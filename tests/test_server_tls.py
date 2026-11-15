@@ -413,3 +413,57 @@ def test_a_half_made_certificate_is_cleaned_up(set_up, monkeypatch):
     assert not list(set_up.glob("*.new"))
     assert not (set_up / "server.crt").exists()
     assert "SECRETSPACE_CERT" not in secretspace_setup.read_env(set_up / "sync.env")
+
+
+def test_every_answer_arrives_whole_when_the_connection_ends(https_server):
+    """
+    Each request on its own connection, with a body the server does not
+    read (it refuses the token first): over plain HTTP the server ends a
+    connection with a graceful half-close, and over TLS it must too -- an
+    abrupt close with unread data turns into a reset, and the answer it had
+    already sent can be lost on the way (seen in CI: IncompleteRead).
+    """
+    import http.client
+    context = pinned(https_server.cert)
+    body = json.dumps({"blob": "x" * 50000})
+    for _ in range(150):
+        conn = http.client.HTTPSConnection("127.0.0.1", https_server.port,
+                                           context=context, timeout=5)
+        try:
+            conn.request("PUT", "/vault/alice", body=body,
+                         headers={"Authorization": "Bearer wrong-token",
+                                  "Content-Type": "application/json"})
+            reply = conn.getresponse()
+            assert reply.status == 401
+            assert json.loads(reply.read())["error"]
+        finally:
+            conn.close()
+
+
+def test_every_answer_arrives_whole_over_plain_http_too(tmp_path):
+    """The same graceful end for a plain connection."""
+    import http.client
+    httpd = secretspace_server.bind("127.0.0.1", 0)
+    httpd.store = secretspace_server.Store(str(tmp_path / "store"))
+    httpd.token = TOKEN
+    os.makedirs(httpd.store.root, exist_ok=True)
+    thread = threading.Thread(target=httpd.serve_forever,
+                              kwargs={"poll_interval": 0.01}, daemon=True)
+    thread.start()
+    try:
+        body = json.dumps({"blob": "x" * 50000})
+        for _ in range(150):
+            conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1],
+                                              timeout=5)
+            try:
+                conn.request("PUT", "/vault/alice", body=body,
+                             headers={"Authorization": "Bearer wrong-token"})
+                reply = conn.getresponse()
+                assert reply.status == 401
+                assert json.loads(reply.read())["error"]
+            finally:
+                conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
