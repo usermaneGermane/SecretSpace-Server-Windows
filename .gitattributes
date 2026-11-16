@@ -13,3 +13,5 @@
 *.png  binary
 *.ico  binary
 *.webp binary
+*.bmp  binary
+*.ttf  binary
