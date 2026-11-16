@@ -1,0 +1,16 @@
+SecretSpace Server is free software, released under the GNU General
+Public License, version 3 (GPL-3.0).
+
+You may use it for any purpose, study and change its source code, and
+share it, changed or not, under the same licence. You do not have to
+accept the licence to install or run the server; it sets the terms for
+copying and changing it.
+
+SecretSpace Server comes WITH NO WARRANTY, to the extent the law allows.
+It keeps the vaults it syncs in %ProgramData%\SecretSpace Server: back
+that folder up.
+
+The full licence text is installed with the program as LICENSE.txt, and
+is at https://www.gnu.org/licenses/gpl-3.0.html
+
+The source code: https://github.com/usermaneGermane/SecretSpace-Server-Windows

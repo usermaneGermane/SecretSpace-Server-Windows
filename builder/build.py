@@ -29,7 +29,10 @@ REQUIRED_FILES = (
     os.path.join("server", "build_version.py"),
     os.path.join("server", "SecretSpace-logo.ico"),
     os.path.join("installer", "SecretSpace-Server.iss"),
-)
+    os.path.join("installer", "licence-notice.txt"),
+    "LICENSE",
+) + tuple(os.path.join("installer", f"wizard-{kind}-{percent}.bmp")
+          for kind in ("large", "small") for percent in (100, 150, 200))
 
 #: winget packages for what pip cannot install.
 WINGET_PYTHON = "Python.Python.3.13"
@@ -111,6 +114,10 @@ def find_iscc(exists=os.path.isfile):
 # so it is rejected by the probe rather than by name).
 PYTHON_CANDIDATES = (["py", "-3"], ["python"], ["python3"])
 
+#: Set to a python.exe, only that one is used. The release workflow sets it,
+#: so the build uses the Python it set up rather than the newest on the PC.
+PYTHON_ENV = "SECRETSPACE_BUILD_PYTHON"
+
 _PROBE = "import sys; print(sys.version.split()[0]); print(sys.executable)"
 
 
@@ -121,8 +128,9 @@ class Python:
     executable: str
 
 
-def find_python(runner=run):
-    for cmd in PYTHON_CANDIDATES:
+def find_python(runner=run, environ=os.environ):
+    chosen = environ.get(PYTHON_ENV)
+    for cmd in ([chosen],) if chosen else PYTHON_CANDIDATES:
         res = runner(cmd + ["-c", _PROBE])
         lines = res.output.strip().splitlines()
         if res.code == 0 and len(lines) >= 2 and lines[0].startswith("3."):

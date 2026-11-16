@@ -597,7 +597,27 @@ py builder\build.py --install-missing    install what is missing first
 
 It checks each prerequisite, offers pip and winget for what is missing, and
 writes `SecretSpace-Server-Installer.exe` here. The version comes from
-`server/version.py`.
+`server/version.py`. Set `SECRETSPACE_BUILD_PYTHON` to a `python.exe` to
+build with that Python only.
+
+The installer shows a page about the GPL before installing and puts the
+licence beside the program as `LICENSE.txt`. Its pictures are drawn by
+`installer/make_wizard_images.py` (Pillow) from the logo and font in
+`installer/art/`; run it again after either changes, and commit the
+pictures.
+
+### How releases are built
+
+The installer on the [Releases](https://github.com/usermaneGermane/SecretSpace-Server-Windows/releases)
+page is built by GitHub Actions ([`build.yml`](.github/workflows/build.yml)),
+not on anyone's PC: a clean Windows runner checks out the tagged commit and
+runs `builder\build.py`, the same script as above. The same run then installs
+that installer silently, checks the server answers on `/health`,
+uninstalls it, and checks the vaults folder is still there. A tag
+`v<version>` makes a draft release with the installer and
+`SHA256SUMS.txt`, which is published once its notes are written. Every pull
+request builds and checks the installer the same way and keeps it as a
+workflow artifact.
 
 ## Versions
 
@@ -612,7 +632,10 @@ separate from the app's and from the Linux server's.
 ```
 SecretSpace-Server-Windows/
 ├── builder/                     build.py: checks, then builds the installer
-├── installer/SecretSpace-Server.iss the Inno Setup script
+├── installer/
+│   ├── SecretSpace-Server.iss   the Inno Setup script
+│   ├── licence-notice.txt       the licence page
+│   └── make_wizard_images.py    draws wizard-*.bmp from art/
 └── server/
     ├── secretspace_server.py        the server (standard library only)
     ├── secretspace_setup.py         network, port, token, the task, the firewall rule
