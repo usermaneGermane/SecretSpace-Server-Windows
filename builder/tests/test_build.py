@@ -226,3 +226,20 @@ def test_the_installer_gets_a_plain_file_version():
     cmd = steps[1][1]
     assert "/DAppVersion=2.0.0-alpha.1" in cmd and "/DFileVersion=2.0.0.1" in cmd
 
+
+# --- the terminal survives winget's progress characters --------------------
+def test_a_console_in_an_old_code_page_does_not_stop_the_builder():
+    """winget's spinner and bar, printed to cp1252, stopped the builder with
+    UnicodeEncodeError; safe_console() prints them as "?" instead."""
+    import subprocess
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = ("import sys; sys.path.insert(0, %r); import build; "
+            "build.safe_console(); print('\\u2588\\u2592 \\u280b installing')" % here)
+    env = dict(os.environ, PYTHONIOENCODING="cp1252")
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, env=env)
+    assert done.returncode == 0, done.stderr.decode(errors="replace")
+    assert b"installing" in done.stdout
+    # Without it, the same print is what stopped the builder.
+    bare = subprocess.run([sys.executable, "-c", code.replace("build.safe_console(); ", "")],
+                          capture_output=True, env=env)
+    assert bare.returncode != 0 and b"UnicodeEncodeError" in bare.stderr
