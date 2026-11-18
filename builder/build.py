@@ -326,5 +326,21 @@ def main(argv=None) -> int:
     return 0 if build(project, find_python(), find_iscc()) else 1
 
 
+def safe_console():
+    """
+    Print what the console cannot show as "?" instead of stopping. winget
+    draws its progress with block and Braille characters; printed to a
+    console or file in an older code page (cp1252, cp437 ...), they raised
+    UnicodeEncodeError and the builder stopped in the middle of installing
+    Inno Setup (found on a clean CI runner, 18 Nov).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 if __name__ == "__main__":
+    safe_console()
     sys.exit(main())
