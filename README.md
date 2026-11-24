@@ -619,6 +619,37 @@ uninstalls it, and checks the vaults folder is still there. A tag
 request builds and checks the installer the same way and keeps it as a
 workflow artifact.
 
+<!-- compatibility:start (the same text in all four repositories; tests/test_compatibility.py checks it) -->
+## Compatibility
+
+The apps and the servers each have their own version numbers, and they do
+not line up: Windows 4.5 and Linux 2.4 are the same app. Versions in one row
+belong together, and each needs a server of the version shown **or newer**,
+for Windows or Linux alike.
+
+| Windows app | Linux app | Server | Worth knowing |
+|---|---|---|---|
+| 4.6 and newer | 2.5 and newer | 2.1.0 | keeps what a newer version added to your vaults, even if it does not know it |
+| 4.5 | 2.4 | 2.1.0 | the web address: update every device before you use it |
+| 4.4 | 2.3 | 2.1.0 | |
+| 4.3 | – | 2.1.0 | no Linux release |
+| 4.0 – 4.2 | 2.0 – 2.2 | 2.1.0 | the current account format |
+| 3.x | 1.x | 2.0.0 | the format before it; newer servers keep serving it |
+| 2.x | 0.x | any | one vault file per user; finished |
+
+- **Update the server first**, then the apps.
+- **Every device of an account on 4.x / 2.x, or none.** Once one device has
+  converted an account to the current format, 3.x / 1.x devices cannot sync
+  it. A shared vault stays in the old format until every member's account
+  is converted.
+- **Before 4.6 / 2.5 an app drops entry fields it does not know** when it
+  saves, and that then syncs to your other devices. Devices on different
+  versions below that are fine as long as you do not use what only the newer
+  one has (the web address of 4.5 / 2.4).
+- **HTTPS with one command** needs server 2.2.1, and apps 4.0.1 / 2.0.1 to
+  keep their sync state when the address changes.
+<!-- compatibility:end -->
+
 ## Versions
 
 The Windows server has its own version, in `server/version.py`, and each
