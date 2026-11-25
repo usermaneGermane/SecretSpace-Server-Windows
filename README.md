@@ -330,10 +330,13 @@ HTTP, `tls` again makes a new certificate (every device then needs it).
 ## API
 
 Every route but `/health` needs `Authorization: Bearer <token>`.
+An app says what it is in `X-SecretSpace-Client: windows/4.7.0`; one older
+than `min_client` gets `426` with the reason. An app that sends no such header
+(before Windows 4.7 / Linux 2.6) is served as before.
 
 | Route | Method | Purpose |
 | --- | --- | --- |
-| `/health` | GET | liveness; no token needed |
+| `/health` | GET | liveness, this server's version and the oldest apps it takes (`min_client`); no token needed |
 | `/vault/<user>/meta` | GET | `{revision, sha256, updated_at, size, key_generation}` — cheap poll |
 | `/vault/<user>` | GET | the blob plus its metadata; `blob: null` if nothing stored |
 | `/vault/<user>` | PUT | store a new revision |
@@ -646,6 +649,11 @@ for Windows or Linux alike.
   saves, and that then syncs to your other devices. Devices on different
   versions below that are fine as long as you do not use what only the newer
   one has (the web address of 4.5 / 2.4).
+- **From 4.7 / 2.6 the versions are checked by themselves.** The app tells
+  the server what it is, and the server (2.3.0 for Windows, 2.4.0 for Linux)
+  can say that an app is too old. A vault can say which version it needs: an
+  older app that knows the check opens it **read-only** instead of damaging
+  it. Nothing asks for that yet. Older servers and apps work as before.
 - **HTTPS with one command** needs server 2.2.1, and apps 4.0.1 / 2.0.1 to
   keep their sync state when the address changes.
 <!-- compatibility:end -->

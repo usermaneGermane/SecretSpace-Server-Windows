@@ -19,6 +19,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import secretspace_setup                                            # noqa: E402
 import secretspace_server                                           # noqa: E402
+from version import __version__                                     # noqa: E402
+
+# Built, there is no version.py beside the server for it to read.
+secretspace_server.SERVER_VERSION = __version__
 
 USAGE = ("This is the server that the startup task runs. To change its "
          "network, port or token, run SecretSpace-Server-Setup.exe (Start Menu "

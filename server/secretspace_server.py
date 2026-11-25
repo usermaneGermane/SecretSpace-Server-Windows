@@ -76,6 +76,43 @@ ENV_PREFIX = "SECRETSPACE_"
 #: The two optional headers of an upload.
 HEADER_KEY_GENERATION = "X-SecretSpace-Key-Generation"
 HEADER_DROP_HISTORY = "X-SecretSpace-Drop-History"
+#: What an app says it is on every request since Windows 4.7.0 / Linux 2.6.0:
+#: "windows/4.7.0". Older apps send nothing and are served as before.
+HEADER_CLIENT = "X-SecretSpace-Client"
+
+#: The oldest app of each kind this server works with, told to everyone by
+#: /health and refused below it. (An app older than HEADER_CLIENT cannot be
+#: refused this way, and is not meant to be: 2.x and 3.x are still served.)
+MIN_CLIENT = {"windows": "4.0.0", "linux": "2.0.0"}
+
+_CLIENT = re.compile(r"([a-z]{1,16})/(\d{1,4})\.(\d{1,4})\.(\d{1,4})")
+
+
+def read_version() -> str:
+    """This server's version: version.py beside this file ("" when it is not
+    there; the Windows program sets SERVER_VERSION itself). The file is not
+    in secretspace_server.py because each repository has its own version."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "version.py"), encoding="utf-8") as f:
+            found = re.search(r'^__version__ = "([^"]{1,32})"', f.read(), re.M)
+    except (OSError, ValueError):
+        return ""
+    return found.group(1) if found else ""
+
+
+SERVER_VERSION = read_version()
+
+
+def refused_client(header) -> str:
+    """Why an app that calls itself ``header`` is refused, or ""."""
+    found = _CLIENT.fullmatch(header or "")
+    least = MIN_CLIENT.get(found.group(1)) if found else None
+    if least is None or tuple(map(int, found.groups()[1:])) >= \
+            tuple(map(int, least.split("."))):
+        return ""
+    return (f"This server needs SecretSpace {least} or newer on this device. "
+            "Update SecretSpace, then sync again. Nothing was changed.")
 
 # The project was called PassMan until November 2026. These are the names
 # from then. They are only ever READ -- from a settings file written by an
@@ -1265,6 +1302,13 @@ class Handler(BaseHTTPRequestHandler):
             return None, None
         return user, tail
 
+    def _refused(self) -> bool:
+        """Answer an app that is too old (426), before anything else."""
+        why = refused_client(self.headers.get(HEADER_CLIENT))
+        if why:
+            self._error(426, why)
+        return bool(why)
+
     # -- routes -----------------------------------------------------------
     def do_GET(self):
         if self.path.split("?")[0] == "/health":
@@ -1277,10 +1321,14 @@ class Handler(BaseHTTPRequestHandler):
             # kept with every wrapped vault key (2.0.0-alpha.5). "format-2" =
             # accounts and vaults in the format SecretSpace 4 writes (2.1.0).
             return self._send(200, {"ok": True, "service": SERVICE_NAME,
+                                    "version": SERVER_VERSION,
+                                    "min_client": MIN_CLIENT,
                                     "api": [1, 2],
                                     "features": ["vaults", "sharing",
                                                  "recovery", "signed-keys",
                                                  "format-2"]})
+        if self._refused():
+            return None
         if self._is_v2():
             return self._v2("GET")
 
@@ -1293,6 +1341,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_blob(self.server.store, user, tail)
 
     def do_PUT(self):
+        if self._refused():
+            return None
         if self._is_v2():
             return self._v2("PUT")
         if not self._authorised():
@@ -1304,12 +1354,16 @@ class Handler(BaseHTTPRequestHandler):
         return self._store_blob(self.server.store, user)
 
     def do_POST(self):
+        if self._refused():
+            return None
         if self._is_v2():
             return self._v2("POST")
         # 2.x never used POST: answer as before, when there was no do_POST.
         self.send_error(501, "Unsupported method ('POST')")
 
     def do_DELETE(self):
+        if self._refused():
+            return None
         if self._is_v2():
             return self._v2("DELETE")
         # Nor DELETE: a 2.x vault is never removed over the network.

@@ -107,7 +107,9 @@ def server(tmp_path):
 def test_health_answers_without_a_token(server):
     status, _, body = server.request("GET", "/health", token=None)
     assert status == 200
-    assert body == {"ok": True, "service": "secretspace-sync", "api": [1, 2],
+    assert body == {"ok": True, "service": "secretspace-sync",
+                    "version": secretspace_server.SERVER_VERSION,
+                    "min_client": secretspace_server.MIN_CLIENT, "api": [1, 2],
                     "features": ["vaults", "sharing", "recovery", "signed-keys",
                                  "format-2"]}
 
