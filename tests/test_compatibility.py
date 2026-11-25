@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-SECTION_SHA256 = "999e4fc0bdadac4ccab0c7f2647caf754cae7e47c60f4928f4f348c223a84be0"
+SECTION_SHA256 = "0a65d14706d2be34667ad7b1d10f3d61df5148702bde3797abd2b8caee5da012"
 
 
 def _root():
