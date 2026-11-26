@@ -83,8 +83,8 @@ class Server:
 
 @pytest.fixture
 def server(tmp_path):
-    """A real ThreadingHTTPServer on a free port, torn down after the test."""
-    httpd = secretspace_server.ThreadingHTTPServer(
+    """The real server on a free port, torn down after the test."""
+    httpd = secretspace_server.SyncServer(
         ("127.0.0.1", 0), secretspace_server.Handler)
     httpd.store = secretspace_server.Store(str(tmp_path / "store"))
     httpd.token = TOKEN
@@ -385,6 +385,26 @@ def test_a_body_larger_than_any_vault_is_refused_unread(server):
                                  content_length=secretspace_server.MAX_BODY + 1)
     assert status == 413
     assert server.store.exists("alice") is False
+
+
+def test_a_refused_upload_is_answered_although_its_body_was_not_read(server):
+    """
+    The server refuses before reading the body (here: no token). Closing
+    with the body unread would reset the connection, and the reset could
+    destroy the answer before the client read it (WinError 10053, seen in
+    CI, 25 Nov 2026). The connection's end reads it away first.
+    """
+    body = b"x" * (4 * 1024 * 1024)
+    head = (f"PUT /vault/alice HTTP/1.1\r\nHost: x\r\n"
+            f"Content-Length: {len(body)}\r\n\r\n").encode()
+    for _ in range(5):
+        with socket.create_connection(("127.0.0.1", server.port),
+                                      timeout=10) as s:
+            s.sendall(head + body)
+            answer = b""
+            while chunk := s.recv(4096):
+                answer += chunk
+        assert answer.startswith(b"HTTP/1.0 401"), answer[:80]
 
 
 def test_a_refused_push_leaves_the_stored_vault_alone(server):
