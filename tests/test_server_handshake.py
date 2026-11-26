@@ -19,7 +19,7 @@ H = secretspace_server.HEADER_CLIENT
 
 @pytest.fixture
 def server(tmp_path):
-    httpd = secretspace_server.ThreadingHTTPServer(
+    httpd = secretspace_server.SyncServer(
         ("127.0.0.1", 0), secretspace_server.Handler)
     httpd.store = secretspace_server.Store(str(tmp_path / "store"))
     httpd.token = "test-token-that-is-long-enough"
